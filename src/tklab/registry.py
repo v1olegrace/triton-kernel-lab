@@ -29,7 +29,11 @@ BenchmarkMetadataFn: TypeAlias = Callable[
 BenchmarkCall: TypeAlias = Callable[[], object]
 BenchmarkCallFactory: TypeAlias = Callable[[TensorArgs, torch.Tensor], BenchmarkCall]
 Bound: TypeAlias = Literal["memory", "compute"]
-ComputeMode: TypeAlias = Literal["fp16_fp32acc", "fp16_fp16acc"]
+ComputeMode: TypeAlias = Literal[
+    "fp16_fp32acc",
+    "fp16_fp16acc",
+    "attention_fp16_fp32acc",
+]
 
 
 @dataclass(frozen=True, slots=True)

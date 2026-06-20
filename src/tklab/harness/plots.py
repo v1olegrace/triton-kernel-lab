@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import matplotlib
 
@@ -19,6 +19,15 @@ class BenchmarkPayload(TypedDict):
     """Minimal benchmark payload required by plot functions."""
 
     rows: list[BenchRow]
+
+
+class AttentionMemoryRow(TypedDict):
+    """One peak-memory observation for an attention implementation."""
+
+    implementation: str
+    sequence_length: int
+    peak_increment_bytes: int | None
+    oom: bool
 
 
 def plot_speedup(payload: BenchmarkPayload, output_dir: Path) -> Path:
@@ -112,7 +121,7 @@ def plot_throughput(payload: BenchmarkPayload, output_dir: Path) -> Path | None:
         label="Triton",
     )
     axis.set_xscale("log", base=2)
-    axis.set_xlabel("Matrix size (M=N=K)")
+    axis.set_xlabel("Problem size")
     axis.set_ylabel("TFLOP/s")
     axis.set_title(f"{kernel}: throughput")
     axis.grid(True, which="both", alpha=0.3)
@@ -180,6 +189,67 @@ def plot_matmul_accumulation_comparison(
     gap_axis.grid(True, which="both", alpha=0.3)
     gap_axis.legend()
 
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=160)
+    plt.close(figure)
+    return output_path
+
+
+def plot_attention_memory(
+    rows: list[AttentionMemoryRow],
+    output_dir: Path,
+) -> Path:
+    """Plot measured attention peak allocation against sequence length."""
+    if not rows:
+        raise ValueError("attention memory plot requires observations")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "flash_attention_memory.png"
+
+    figure, axis = plt.subplots(figsize=(8, 5))
+    for implementation in sorted({row["implementation"] for row in rows}):
+        implementation_rows = sorted(
+            (
+                row
+                for row in rows
+                if row["implementation"] == implementation
+                and row["peak_increment_bytes"] is not None
+            ),
+            key=lambda row: row["sequence_length"],
+        )
+        axis.plot(
+            [row["sequence_length"] for row in implementation_rows],
+            [cast(int, row["peak_increment_bytes"]) / 2**20 for row in implementation_rows],
+            marker="o",
+            label=implementation,
+        )
+        oom_rows = [row for row in rows if row["implementation"] == implementation and row["oom"]]
+        if oom_rows and implementation_rows:
+            marker_y = cast(int, implementation_rows[-1]["peak_increment_bytes"]) / 2**20
+            for row in oom_rows:
+                axis.scatter(
+                    row["sequence_length"],
+                    marker_y,
+                    marker="x",
+                    s=80,
+                    color="red",
+                    zorder=5,
+                )
+                axis.annotate(
+                    "OOM",
+                    (row["sequence_length"], marker_y),
+                    xytext=(0, 8),
+                    textcoords="offset points",
+                    ha="center",
+                    color="red",
+                )
+
+    axis.set_xscale("log", base=2)
+    axis.set_yscale("log", base=2)
+    axis.set_xlabel("Sequence length")
+    axis.set_ylabel("Peak incremental allocation (MiB)")
+    axis.set_title("Attention forward peak memory")
+    axis.grid(True, which="both", alpha=0.3)
+    axis.legend()
     figure.tight_layout()
     figure.savefig(output_path, dpi=160)
     plt.close(figure)

@@ -40,6 +40,9 @@ class BenchRow(TypedDict):
     num_warps: NotRequired[int]
     num_stages: NotRequired[int]
     mma_opcode: NotRequired[str]
+    heads: NotRequired[int]
+    head_dim: NotRequired[int]
+    causal: NotRequired[bool]
 
 
 def bench_spec(

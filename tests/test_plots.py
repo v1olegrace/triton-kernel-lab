@@ -8,7 +8,9 @@ import pytest
 
 from tklab.harness.bench import BenchRow
 from tklab.harness.plots import (
+    AttentionMemoryRow,
     BenchmarkPayload,
+    plot_attention_memory,
     plot_matmul_accumulation_comparison,
     plot_speedup,
     plot_throughput,
@@ -63,3 +65,30 @@ def test_matmul_comparison_requires_matching_sizes(tmp_path: Path) -> None:
     fp16: BenchmarkPayload = {"rows": [_row(kernel="fp16", size=1024, speedup=1.0, tflops=15.0)]}
     with pytest.raises(ValueError, match="matching sizes"):
         plot_matmul_accumulation_comparison(fp32, fp16, tmp_path)
+
+
+def test_attention_memory_plot_handles_oom_marker(tmp_path: Path) -> None:
+    """Render successful memory points plus a terminal OOM observation."""
+    rows: list[AttentionMemoryRow] = [
+        {
+            "implementation": "flash",
+            "sequence_length": 512,
+            "peak_increment_bytes": 1 << 20,
+            "oom": False,
+        },
+        {
+            "implementation": "materialized",
+            "sequence_length": 512,
+            "peak_increment_bytes": 25 << 20,
+            "oom": False,
+        },
+        {
+            "implementation": "materialized",
+            "sequence_length": 1024,
+            "peak_increment_bytes": None,
+            "oom": True,
+        },
+    ]
+    output = plot_attention_memory(rows, tmp_path)
+    assert output.is_file()
+    assert output.stat().st_size > 0

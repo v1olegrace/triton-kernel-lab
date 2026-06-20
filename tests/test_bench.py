@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from tklab.harness.bench import BenchRow, _add_performance_metrics
+from tklab.kernels.flash_attention import ATTENTION_CAUSAL, ATTENTION_NONCAUSAL
 from tklab.kernels.matmul import MATMUL_FP32ACC
 
 
@@ -36,3 +37,16 @@ def test_compute_metrics_separate_same_size_cublas_from_peak() -> None:
     assert row["reference_tflops"] == pytest.approx(2 * row["tflops"])
     assert row["pct_cublas_same_size"] == pytest.approx(50.0)
     assert row["pct_cublas_peak"] == pytest.approx(100.0 * row["tflops"] / 32.0)
+
+
+def test_attention_flops_use_full_and_lower_triangular_pair_counts() -> None:
+    """Count both attention matmuls and the exact causal lower triangle."""
+    assert ATTENTION_NONCAUSAL.flops is not None
+    assert ATTENTION_CAUSAL.flops is not None
+    sequence_length = 8
+    full_pairs = sequence_length**2
+    causal_pairs = sequence_length * (sequence_length + 1) // 2
+    fixed_factor = 4 * 1 * 16 * 64
+
+    assert ATTENTION_NONCAUSAL.flops(sequence_length, torch.float16) == (fixed_factor * full_pairs)
+    assert ATTENTION_CAUSAL.flops(sequence_length, torch.float16) == (fixed_factor * causal_pairs)

@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "study": "flash_attention_memory",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "compute_capability": "8.9",
+  "torch_version": "2.12.1+cu130",
+  "triton_version": "3.7.1",
+  "batch": 1,
+  "heads": 16,
+  "head_dim": 64,
+  "dtype": "float16",
+  "measurements": [
+    {
+      "implementation": "flash",
+      "sequence_length": 512,
+      "baseline_allocated_bytes": 3145728,
+      "peak_allocated_bytes": 4194304,
+      "peak_increment_bytes": 1048576,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 1024,
+      "baseline_allocated_bytes": 6291456,
+      "peak_allocated_bytes": 8388608,
+      "peak_increment_bytes": 2097152,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 2048,
+      "baseline_allocated_bytes": 12582912,
+      "peak_allocated_bytes": 16777216,
+      "peak_increment_bytes": 4194304,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 4096,
+      "baseline_allocated_bytes": 25165824,
+      "peak_allocated_bytes": 33554432,
+      "peak_increment_bytes": 8388608,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 8192,
+      "baseline_allocated_bytes": 50331648,
+      "peak_allocated_bytes": 67108864,
+      "peak_increment_bytes": 16777216,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 12288,
+      "baseline_allocated_bytes": 75497472,
+      "peak_allocated_bytes": 100663296,
+      "peak_increment_bytes": 25165824,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 16384,
+      "baseline_allocated_bytes": 100663296,
+      "peak_allocated_bytes": 134217728,
+      "peak_increment_bytes": 33554432,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "flash",
+      "sequence_length": 24576,
+      "baseline_allocated_bytes": 150994944,
+      "peak_allocated_bytes": 201326592,
+      "peak_increment_bytes": 50331648,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 512,
+      "baseline_allocated_bytes": 3145728,
+      "peak_allocated_bytes": 29491200,
+      "peak_increment_bytes": 26345472,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 1024,
+      "baseline_allocated_bytes": 6291456,
+      "peak_allocated_bytes": 84017152,
+      "peak_increment_bytes": 77725696,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 2048,
+      "baseline_allocated_bytes": 12582912,
+      "peak_allocated_bytes": 293732352,
+      "peak_increment_bytes": 281149440,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 4096,
+      "baseline_allocated_bytes": 25165824,
+      "peak_allocated_bytes": 1115815936,
+      "peak_increment_bytes": 1090650112,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 8192,
+      "baseline_allocated_bytes": 50331648,
+      "peak_allocated_bytes": 4370595840,
+      "peak_increment_bytes": 4320264192,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 12288,
+      "baseline_allocated_bytes": 75497472,
+      "peak_allocated_bytes": 9772859392,
+      "peak_increment_bytes": 9697361920,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 16384,
+      "baseline_allocated_bytes": 100663296,
+      "peak_allocated_bytes": 17322606592,
+      "peak_increment_bytes": 17221943296,
+      "output_finite": true,
+      "oom": false,
+      "error": null
+    },
+    {
+      "implementation": "materialized",
+      "sequence_length": 24576,
+      "baseline_allocated_bytes": 150994944,
+      "peak_allocated_bytes": null,
+      "peak_increment_bytes": null,
+      "output_finite": null,
+      "oom": true,
+      "error": "CUDA out of memory. Tried to allocate 18.00 GiB. GPU 0 has a total capacity of 8.00 GiB of which 0 bytes is free. Including non-PyTorch memory, this process has 17179869184.00 GiB memory in use. Of the allocated memory 18.15 GiB is allocated by PyTorch, and 11.88 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+    }
+  ],
+  "empirical_log_log_slope": {
+    "flash": 1.0,
+    "materialized": 1.8704954401941405
+  }
+}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from tklab.kernels.flash_attention import attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
@@ -72,3 +73,12 @@ def test_matmul_rejects_offsets_outside_int32_range() -> None:
     right = torch.empty((2, 2), dtype=torch.float16, device="meta")
     with pytest.raises(ValueError, match="int32 offset"):
         matmul_fp32acc(left, right)
+
+
+def test_attention_rejects_shape_mismatch() -> None:
+    """Reject mismatched Q/K/V metadata before requiring CUDA."""
+    query = torch.zeros(1, 2, 8, 64, dtype=torch.float16)
+    key = torch.zeros(1, 2, 7, 64, dtype=torch.float16)
+    value = torch.zeros_like(query)
+    with pytest.raises(ValueError, match="identical shapes"):
+        attention_noncausal(query, key, value)

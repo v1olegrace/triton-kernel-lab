@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
+from tklab.kernels.flash_attention import attention_causal, attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp16acc, matmul_fp32acc
@@ -59,4 +60,19 @@ def test_sanitizer_layer_norm_forward_backward_strided_tail() -> None:
     bias = torch.randn(columns, device="cuda", dtype=torch.float32, requires_grad=True)
     output = layer_norm(x, weight, bias)
     torch.autograd.grad(output, (x, weight, bias), grad_outputs=dy)
+    torch.cuda.synchronize()
+
+
+@pytest.mark.parametrize("kernel", [attention_noncausal, attention_causal])
+def test_sanitizer_flash_attention_partial_tiles(
+    kernel: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+) -> None:
+    """Exercise query/key tails and the partial causal diagonal block."""
+    shape = (1, 16, 1000, 64)
+    q = torch.randn(shape, device="cuda", dtype=torch.float16)
+    k = torch.randn(shape, device="cuda", dtype=torch.float16)
+    v = torch.randn(shape, device="cuda", dtype=torch.float16)
+    output = kernel(q, k, v)
+    if not torch.isfinite(output).all():
+        raise AssertionError("attention sanitizer workload produced non-finite output")
     torch.cuda.synchronize()

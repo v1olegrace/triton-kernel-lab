@@ -219,6 +219,11 @@ def _compute_baselines(
             None,
             peaks["theoretical_tflops_fp16_fp16acc_at_measured_clock"],
         )
+    if spec.compute_mode == "attention_fp16_fp32acc":
+        return (
+            None,
+            peaks["theoretical_tflops_fp16_fp32acc_at_measured_clock"],
+        )
     return None, None
 
 

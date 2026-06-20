@@ -59,6 +59,8 @@ def _memory_spec(**overrides: object) -> KernelSpec:
 def test_registry_contains_expected_kernels() -> None:
     """Ensure importing the package registers every built-in kernel."""
     assert set(REGISTRY) == {
+        "attention_causal",
+        "attention_noncausal",
         "vector_add",
         "fused_softmax",
         "layer_norm_forward",

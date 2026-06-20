@@ -54,12 +54,14 @@ and plots then consume the same contract.
 | `matmul_fp32acc` | Tensor Cores, L2 grouping, autotune, FP32 accumulate | % of cuBLAS |
 | `matmul_fp16acc` | FP16 Tensor Core accumulation and accuracy trade-off | % theoretical |
 | `layer_norm_forward` | FP32 statistics, autograd, lock-reduced backward | bandwidth roofline |
+| `attention_noncausal` / `attention_causal` | online softmax, tiled Q/K/V, causal staging | TFLOP/s vs SDPA |
 
 Kernel-specific analysis is available in:
 
 - [Fused softmax](docs/fused_softmax.md)
 - [Matrix multiplication](docs/matmul.md)
 - [LayerNorm with backward](docs/layer_norm.md)
+- [Flash Attention forward](docs/flash_attention.md)
 - [Benchmark methodology](docs/benchmarking.md)
 - [GPU debugging and profiling](docs/debugging.md)
 - [Engineering review](docs/code_review.md)
@@ -86,6 +88,8 @@ Representative committed results:
 | Triton matmul FP16 accumulate | ~53.1 TFLOP/s |
 | NCU Tensor-path utilization, FP32 / FP16 accumulate | 95.73% / 89.91% |
 | LayerNorm forward vs native PyTorch, FP16 | ~1.5–2.3× |
+| Flash Attention forward vs PyTorch SDPA | ~0.86–0.97× |
+| Flash vs materialized attention at N=16384 | 32 MiB vs 16.0 GiB |
 
 These are observations from one machine, not portable promises. Inspect
 [`results/nvidia_geforce_rtx_4060/`](results/nvidia_geforce_rtx_4060/) for
@@ -273,12 +277,14 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 ```text
 .
 ├── benchmarks/
+│   ├── flash_attention_memory.py
 │   ├── layer_norm_backward.py  # two-stage backward study
 │   └── run.py                  # compatibility entry point
 ├── docs/
 │   ├── benchmarking.md
 │   ├── code_review.md
 │   ├── debugging.md
+│   ├── flash_attention.md
 │   ├── fused_softmax.md
 │   ├── layer_norm.md
 │   └── matmul.md
@@ -294,6 +300,7 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │   │   ├── roofline.py
 │   │   └── tolerances.py
 │   └── kernels/
+│       ├── flash_attention.py
 │       ├── fused_softmax.py
 │       ├── layer_norm.py
 │       ├── matmul.py
@@ -316,6 +323,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   higher-order gradients are not supported. Its lock-reduced parameter
   gradients are numerically stable but not bitwise deterministic; backward
   rejects PyTorch deterministic mode.
+- Flash Attention forward currently supports contiguous FP16 Q/K/V with
+  `head_dim=64`. Dropout, attention bias, grouped-query attention, and
+  backward are outside Phase 6A.
 - The contiguous matmul fast path matches the measured cuBLAS peak in FP32
   accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
   designs and profiler evidence remain future work for broader shapes.
