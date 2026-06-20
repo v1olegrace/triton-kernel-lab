@@ -104,6 +104,18 @@ These measurements reject the proposed optimization, but they do not prove a
 hardware ceiling. Attributing the remaining gap solely to SM89 would require
 counter-level evidence from a profiler.
 
+The single-launch Nsight Compute target and AD107-specific counter selection
+are documented in [debugging.md](debugging.md). Counter evidence is kept
+separate from throughput inferred from elapsed time and theoretical FLOP
+rates.
+
+The clean NCU collection confirms 95.73% of the mode-specific FP16-input /
+FP32-accumulate Tensor path peak and 89.91% for FP16 accumulation. FP16
+accumulation raises SM throughput from 47.38% to 86.90% and DRAM throughput
+from 11.79% to 21.63%, while active-warp occupancy remains approximately 32%.
+These values include the different autotuned launch configurations selected
+by each production variant.
+
 The contiguous fast path uses signed int32 address arithmetic. Public
 validation rejects layouts whose maximum relative offset exceeds
 `2^31 - 1`; larger tensors require an explicitly audited int64-addressing

@@ -1,0 +1,205 @@
+# GPU debugging and profiling
+
+This document records the real-GPU validation used to complement numerical
+comparison against PyTorch. Numerical agreement validates formulas; it does
+not, by itself, prove that masked accesses, synchronization, or global-memory
+coordination are correct.
+
+## Environment
+
+The committed Phase 5 evidence was collected on:
+
+- NVIDIA GeForce RTX 4060 desktop, compute capability 8.9;
+- WSL2 Ubuntu 24.04;
+- PyTorch 2.12.1 with CUDA 13.0;
+- Triton 3.7.1;
+- Compute Sanitizer 2026.2.0;
+- Nsight Compute CLI 2026.2.0.
+
+Tool versions are recorded because sanitizer behavior and profiler metric
+names change between CUDA releases.
+
+## Compute Sanitizer
+
+The focused workloads in `tests/test_sanitizer_workloads.py` exercise:
+
+- vector-add non-unit strides and a masked tail;
+- softmax row stride and a non-power-of-two width;
+- both matmul accumulation modes on contiguous tensors and the strided
+  `129x193 @ 193x257` M/N/K-tail case;
+- LayerNorm row-strided forward and lock-reduced backward.
+
+Run them with:
+
+```bash
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k layer_norm
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k layer_norm
+```
+
+The RTX 4060 run completed with:
+
+| Tool | Scope | Result |
+|---|---|---|
+| memcheck | all focused kernels | 0 errors |
+| initcheck | all focused kernels | 0 errors |
+| racecheck | LayerNorm | 0 errors, 0 warnings |
+| synccheck | LayerNorm | 0 errors |
+
+The raw summaries are committed under
+`results/nvidia_geforce_rtx_4060/compute_sanitizer_*.log`.
+
+### Coverage limits
+
+`memcheck` detects out-of-bounds and misaligned device-memory accesses.
+`initcheck` detects reads from uninitialized global memory.
+`racecheck` diagnoses shared-memory hazards within a thread block.
+`synccheck` diagnoses invalid synchronization usage.
+
+The LayerNorm partial-gradient lock coordinates independent programs through
+global memory. `racecheck` does not prove that the inter-block protocol is correct.
+That protocol is therefore validated separately through a high-contention,
+repeated numerical stress test.
+
+## LayerNorm global-lock stress
+
+Reproduce the committed stress study with:
+
+```bash
+python benchmarks/layer_norm_lock_stress.py \
+  --rows 65536 \
+  --columns 1024 \
+  --runs 50 \
+  --group-size 8 \
+  --group-size 32 \
+  --group-size 128
+```
+
+The most contended configuration assigns 8,192 rows to each lock slot, four
+times the requested 2,048-row target. Every group count passed the following
+thresholds:
+
+- relative Frobenius error against PyTorch below `1e-2`;
+- maximum run-to-run relative drift below `1e-4`;
+- relative drift between group counts below `1e-4`.
+
+Results are not expected to be bitwise identical. Competing programs can
+acquire the lock in different orders, changing the order of FP32 additions.
+That is ordinary floating-point non-associativity, not evidence of lost
+updates. A race signal would be large run-to-run drift, large reference error,
+or an error that changes materially with the number of lock groups.
+
+The complete values and thresholds are stored in
+`results/nvidia_geforce_rtx_4060/layer_norm_lock_stress.json`.
+
+## Triton interpreter limitation
+
+`TRITON_INTERPRET=1` is useful for scalar logic, masks, and indexing, but it
+does not reproduce GPU scheduling or the memory-ordering behavior of atomics
+between programs. Interpreter tests therefore cannot establish correctness of
+the LayerNorm global lock. That claim requires real-GPU stress and tool-based
+validation.
+
+## Nsight Compute
+
+`benchmarks/profile_matmul.py` warms a specialization before placing exactly
+one matmul launch between `cudaProfilerStart` and `cudaProfilerStop`.
+
+On AD107 with Nsight Compute 2026.2, the relevant metrics are:
+
+- `sm__inst_executed_pipe_tensor_op_hmma_v2.avg.pct_of_peak_sustained_active`;
+- `sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.avg.pct_of_peak_sustained_active`;
+- `sm__ops_path_tensor_src_fp16_dst_fp16_sparsity_off.avg.pct_of_peak_sustained_active`;
+- `sm__throughput.avg.pct_of_peak_sustained_elapsed`;
+- `sm__warps_active.avg.pct_of_peak_sustained_active`;
+- `dram__throughput.avg.pct_of_peak_sustained_elapsed`.
+
+The older `sm__pipe_tensor_op_hmma_cycles_active...` spelling is not exposed
+for this chip/tool combination. Metric availability must be queried for the
+target GPU instead of copied across architectures or Nsight versions.
+
+The generic HMMA metric counts issued warp instructions. It is not a direct
+measure of useful FLOP throughput when accumulator modes have different
+operation rates. The two `sm__ops_path_tensor...` metrics provide the
+mode-specific denominators used for the final utilization claim.
+
+Profile both accumulation modes:
+
+```bash
+METRICS=sm__inst_executed_pipe_tensor_op_hmma_v2.avg.pct_of_peak_sustained_active,\
+sm__ops_path_tensor_src_fp16_dst_fp32_sparsity_off.avg.pct_of_peak_sustained_active,\
+sm__ops_path_tensor_src_fp16_dst_fp16_sparsity_off.avg.pct_of_peak_sustained_active,\
+sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+sm__warps_active.avg.pct_of_peak_sustained_active,\
+dram__throughput.avg.pct_of_peak_sustained_elapsed
+
+ncu --profile-from-start off --target-processes all \
+  -k regex:_matmul_kernel -c 1 \
+  --metrics "$METRICS" --csv --page raw \
+  python benchmarks/profile_matmul.py --mode fp32acc --size 2048
+
+ncu --profile-from-start off --target-processes all \
+  -k regex:_matmul_kernel -c 1 \
+  --metrics "$METRICS" --csv --page raw \
+  python benchmarks/profile_matmul.py --mode fp16acc --size 2048
+```
+
+On Windows/WSL, `ERR_NVGPUCTRPERM` means the driver has disabled access to
+hardware counters for the current user. Enable access through NVIDIA Control
+Panel under Developer settings before interpreting any profiler result.
+
+### RTX 4060 result
+
+The final collection used one `2048x2048` launch per mode while the Windows
+screen was locked, after the GPU had returned to idle:
+
+| Metric | FP32 accumulate | FP16 accumulate |
+|---|---:|---:|
+| mode-specific Tensor ops / peak | 95.73% | 89.91% |
+| HMMA instruction issue / peak | 23.93% | 44.95% |
+| SM throughput / peak | 47.38% | 86.90% |
+| active warps / peak | 32.26% | 31.95% |
+| DRAM throughput / peak | 11.79% | 21.63% |
+| NCU kernel duration | 602.720 us | 336.352 us |
+| registers per thread | 80 | 108 (112 allocated) |
+| dynamic shared memory | 24 KiB | 48 KiB |
+
+The counter evidence confirms that FP32 accumulation is already near its
+mode-specific Tensor Core ceiling. FP16 accumulation nearly doubles HMMA
+instruction issue and raises both SM and DRAM pressure while active-warp
+occupancy remains effectively unchanged. Its 89.91% mode-specific utilization
+also shows why the end-to-end gain remains below the ideal 2x.
+
+This is not a controlled accumulator-dtype-only experiment: autotuning selects
+different launch configurations. FP32 accumulation uses 128 threads and 1,024
+blocks; FP16 accumulation uses 256 threads and 256 blocks, with more registers
+and shared memory per block. The result characterizes the production variants
+as shipped, not an isolated instruction microbenchmark.
+
+Raw NCU CSV files and a compact JSON summary are committed under
+`results/nvidia_geforce_rtx_4060/`.
+
+## Kernel-side diagnostics
+
+Compile-time invariants should use `tl.static_assert`. The matmul kernel
+asserts that `BLOCK_K` is at least 16 and divisible by 16, matching the K
+granularity of its Tensor Core MMA path.
+
+`tl.device_print` is reserved for targeted diagnosis because every active
+program can emit output. Restrict it to a single program and a small subset of
+lanes, for example while investigating one tile:
+
+```python
+if tl.program_id(0) == 0:
+    tl.device_print("acc", acc)
+```
+
+Debug prints are never left enabled in benchmark or production paths.

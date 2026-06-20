@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "kernel": "layer_norm_lock_stress",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "compute_capability": "8.9",
+  "torch_version": "2.12.1+cu130",
+  "triton_version": "3.7.1",
+  "rows": 65536,
+  "columns": 1024,
+  "runs_per_group": 50,
+  "group_results": [
+    {
+      "group_size": 8,
+      "rows_per_slot": 8192,
+      "runs": 50,
+      "bitwise_identical": false,
+      "unique_output_hashes": 50,
+      "max_repeat_relative_drift_dweight": 9.295289942201634e-07,
+      "max_repeat_relative_drift_dbias": 9.370967291033594e-07,
+      "dweight_relative_frobenius": 1.5969418427630444e-06,
+      "dbias_relative_frobenius": 1.59878379690781e-06
+    },
+    {
+      "group_size": 32,
+      "rows_per_slot": 2048,
+      "runs": 50,
+      "bitwise_identical": false,
+      "unique_output_hashes": 50,
+      "max_repeat_relative_drift_dweight": 4.59930362239902e-07,
+      "max_repeat_relative_drift_dbias": 4.980008156962867e-07,
+      "dweight_relative_frobenius": 8.390711627725977e-07,
+      "dbias_relative_frobenius": 8.686694172865828e-07
+    },
+    {
+      "group_size": 128,
+      "rows_per_slot": 512,
+      "runs": 50,
+      "bitwise_identical": false,
+      "unique_output_hashes": 50,
+      "max_repeat_relative_drift_dweight": 1.856970754943177e-07,
+      "max_repeat_relative_drift_dbias": 2.0035903958159906e-07,
+      "dweight_relative_frobenius": 4.5949400373501703e-07,
+      "dbias_relative_frobenius": 4.6219548721637693e-07
+    }
+  ],
+  "group_invariance": [
+    {
+      "reference_group_size": 8,
+      "group_size": 32,
+      "dweight_relative_frobenius": 1.7734944322000956e-06,
+      "dbias_relative_frobenius": 1.7646697187956306e-06
+    },
+    {
+      "reference_group_size": 8,
+      "group_size": 128,
+      "dweight_relative_frobenius": 1.6565247733524302e-06,
+      "dbias_relative_frobenius": 1.6750730083003873e-06
+    }
+  ],
+  "interpretation": {
+    "bitwise_identity_expected": false,
+    "reason": "lock acquisition order changes floating-point reduction order",
+    "race_signal": "large repeat drift, reference error, or group-dependent error",
+    "max_reference_error": 0.01,
+    "max_repeat_drift": 0.0001,
+    "max_group_drift": 0.0001
+  }
+}

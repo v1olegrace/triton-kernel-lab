@@ -287,20 +287,32 @@ def _launch_forward(
 def _make_backward_buffers(
     x: torch.Tensor,
     weight: torch.Tensor,
+    *,
+    group_size: int | None = None,
 ) -> _BackwardBuffers:
     """Allocate backward outputs and lock-group partial buffers."""
     rows, columns = x.shape
     block_size, num_warps = _block_size_and_warps(columns, x.element_size())
-    group_size = _group_size_m(columns)
-    group_count = min(group_size, rows)
+    selected_group_size = _group_size_m(columns) if group_size is None else group_size
+    if selected_group_size <= 0:
+        raise ValueError("group_size must be positive")
+    group_count = min(selected_group_size, rows)
     return _BackwardBuffers(
         dx=torch.empty(x.shape, dtype=x.dtype, device=x.device),
-        partial_dw=torch.empty((group_size, columns), dtype=torch.float32, device=x.device),
-        partial_db=torch.empty((group_size, columns), dtype=torch.float32, device=x.device),
+        partial_dw=torch.empty(
+            (selected_group_size, columns),
+            dtype=torch.float32,
+            device=x.device,
+        ),
+        partial_db=torch.empty(
+            (selected_group_size, columns),
+            dtype=torch.float32,
+            device=x.device,
+        ),
         dw=torch.empty_like(weight),
         db=torch.empty_like(weight),
-        locks=torch.zeros(2 * group_size, dtype=torch.int32, device=x.device),
-        group_size=group_size,
+        locks=torch.zeros(2 * selected_group_size, dtype=torch.int32, device=x.device),
+        group_size=selected_group_size,
         group_count=group_count,
         block_size=block_size,
         num_warps=num_warps,

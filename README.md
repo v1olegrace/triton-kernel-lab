@@ -61,6 +61,7 @@ Kernel-specific analysis is available in:
 - [Matrix multiplication](docs/matmul.md)
 - [LayerNorm with backward](docs/layer_norm.md)
 - [Benchmark methodology](docs/benchmarking.md)
+- [GPU debugging and profiling](docs/debugging.md)
 - [Engineering review](docs/code_review.md)
 
 ## Measured RTX 4060 results
@@ -83,6 +84,7 @@ Representative committed results:
 | cuBLAS FP16 input / FP32 accumulate | ~30.9 TFLOP/s |
 | Triton matmul FP32 accumulate | ~31.0 TFLOP/s |
 | Triton matmul FP16 accumulate | ~53.1 TFLOP/s |
+| NCU Tensor-path utilization, FP32 / FP16 accumulate | 95.73% / 89.91% |
 | LayerNorm forward vs native PyTorch, FP16 | ~1.5–2.3× |
 
 These are observations from one machine, not portable promises. Inspect
@@ -246,6 +248,9 @@ make format
 
 GPU correctness includes non-power-of-two tails, non-contiguous row/element
 strides, and the adversarial `129×193 @ 193×257` matmul.
+Focused Compute Sanitizer workloads, the LayerNorm lock-contention study, and
+Nsight Compute commands are documented in
+[docs/debugging.md](docs/debugging.md).
 
 ## Benchmark methodology
 
@@ -273,6 +278,7 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 ├── docs/
 │   ├── benchmarking.md
 │   ├── code_review.md
+│   ├── debugging.md
 │   ├── fused_softmax.md
 │   ├── layer_norm.md
 │   └── matmul.md
@@ -314,6 +320,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 - GitHub-hosted CI has no GPU. Real-GPU tests and benchmark artifacts are run
   locally; CI covers static checks, CPU unit tests, and Triton interpreter
   cases.
+- Triton's interpreter does not model real GPU program scheduling or
+  inter-program atomic ordering. Lock-protocol claims require real-GPU stress
+  and sanitizer evidence.
 
 ## Contributing
 

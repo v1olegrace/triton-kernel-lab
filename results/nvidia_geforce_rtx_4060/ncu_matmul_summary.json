@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "compute_capability": "8.9",
+  "matrix_size": 2048,
+  "input_dtype": "float16",
+  "nsight_compute_version": "2026.2.0",
+  "collection": {
+    "profiled_launches_per_mode": 1,
+    "profile_from_start": false,
+    "screen_locked": true,
+    "raw_files": [
+      "ncu_matmul_fp32acc.csv",
+      "ncu_matmul_fp16acc.csv"
+    ]
+  },
+  "modes": {
+    "fp32acc": {
+      "duration_ns": 602720,
+      "tensor_ops_pct_of_mode_peak": 95.73,
+      "hmma_instruction_rate_pct": 23.93,
+      "sm_throughput_pct": 47.38,
+      "active_warps_pct": 32.26,
+      "dram_throughput_pct": 11.79,
+      "block_size": 128,
+      "grid_size": 1024,
+      "registers_per_thread": 80,
+      "allocated_registers_per_thread": 80,
+      "dynamic_shared_memory_bytes": 24576,
+      "occupancy_limit_register_blocks": 6,
+      "occupancy_limit_shared_memory_blocks": 4
+    },
+    "fp16acc": {
+      "duration_ns": 336352,
+      "tensor_ops_pct_of_mode_peak": 89.91,
+      "hmma_instruction_rate_pct": 44.95,
+      "sm_throughput_pct": 86.9,
+      "active_warps_pct": 31.95,
+      "dram_throughput_pct": 21.63,
+      "block_size": 256,
+      "grid_size": 256,
+      "registers_per_thread": 108,
+      "allocated_registers_per_thread": 112,
+      "dynamic_shared_memory_bytes": 49152,
+      "occupancy_limit_register_blocks": 2,
+      "occupancy_limit_shared_memory_blocks": 2
+    }
+  },
+  "interpretation": {
+    "fp32acc_tensor_path_confirmed": true,
+    "fp16acc_tensor_path_confirmed": true,
+    "active_warps_are_comparable": true,
+    "fp16acc_has_higher_sm_and_dram_pressure": true,
+    "launch_configs_are_different": true,
+    "caveat": "The comparison includes each mode's autotuned launch configuration, not only accumulator dtype."
+  }
+}

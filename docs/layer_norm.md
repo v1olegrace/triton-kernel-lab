@@ -113,3 +113,15 @@ The lock-reduction structure follows the official Triton LayerNorm tutorial:
 <https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html>.
 The custom autograd function implements first-order gradients only; higher-
 order differentiation is outside the current contract.
+
+## Contention validation
+
+The global-lock protocol is stress-tested at `M=65536`, `N=1024` for 50 runs
+each with 8, 32, and 128 lock groups. This reaches 8,192 rows per lock slot in
+the most contended case. Reference error, run-to-run drift, and group-count
+drift all remain below the committed thresholds.
+
+Bitwise identity is not expected because lock acquisition order changes the
+order of floating-point additions. See [debugging.md](debugging.md) and the
+committed `layer_norm_lock_stress.json` artifact for the exact methodology and
+values.

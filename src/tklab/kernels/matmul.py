@@ -96,6 +96,8 @@ def _matmul_kernel(
     CONTIGUOUS: tl.constexpr,
 ) -> None:
     """Compute one grouped output tile and mask M, N, and K tails."""
+    tl.static_assert(BLOCK_K >= 16, "Tensor Core K tile must be at least 16")
+    tl.static_assert(BLOCK_K % 16 == 0, "Tensor Core K tile must be a multiple of 16")
     program_id = tl.program_id(axis=0)
     num_programs_m = tl.cdiv(M, BLOCK_M)
     num_programs_n = tl.cdiv(N, BLOCK_N)

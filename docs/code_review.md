@@ -52,8 +52,9 @@ portfolio refactor.
 - GitHub-hosted CI cannot execute real-GPU tests.
 - The contiguous matmul path now reaches the FP16-input/FP32-accumulate
   silicon ceiling; broader layouts and small-GEMM stream-K remain open work.
-- LayerNorm backward introduces lock-protected shared reduction state. It is
-  covered by gradient tests, but race-focused sanitizer/profiler work remains
-  a deliberate next phase.
+- LayerNorm backward introduces lock-protected global reduction state.
+  Formula correctness, sanitizer coverage, and high-contention stress are now
+  documented; Compute Sanitizer cannot independently prove an inter-block
+  global-memory protocol.
 - Publishing placeholders in README, LICENSE, badges, and security contact
   must be replaced by the repository owner.
