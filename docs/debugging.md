@@ -65,9 +65,14 @@ The raw summaries are committed under
 `synccheck` diagnoses invalid synchronization usage.
 
 The LayerNorm partial-gradient lock coordinates independent programs through
-global memory. `racecheck` does not prove that the inter-block protocol is correct.
-That protocol is therefore validated separately through a high-contention,
-repeated numerical stress test.
+global memory. `racecheck` does not independently verify that inter-block
+protocol. The implementation uses explicit `acq_rel` atomics at GPU scope,
+while a high-contention repeated numerical test validates the complete
+protocol on real hardware.
+
+PTX inspection on SM89 confirms `atom.global.acq_rel.gpu.cas` for lock
+acquisition, a block barrier before unlock, and
+`atom.global.gpu.acq_rel.exch` for release.
 
 ## LayerNorm global-lock stress
 
@@ -99,6 +104,11 @@ or an error that changes materially with the number of lock groups.
 
 The complete values and thresholds are stored in
 `results/nvidia_geforce_rtx_4060/layer_norm_lock_stress.json`.
+
+The ordinary gradient suite also combines previously separate dimensions:
+1,025 row-strided rows, 1,000 columns, masked tails, and up to five rows per
+default lock slot. This catches interactions that a power-of-two contention
+test and a low-row-count tail test can each miss in isolation.
 
 ## Triton interpreter limitation
 
@@ -177,6 +187,19 @@ mode-specific Tensor Core ceiling. FP16 accumulation nearly doubles HMMA
 instruction issue and raises both SM and DRAM pressure while active-warp
 occupancy remains effectively unchanged. Its 89.91% mode-specific utilization
 also shows why the end-to-end gain remains below the ideal 2x.
+
+Normalizing the FP32-accumulate SM counter from the full-rate FP16 denominator
+to the architecture's half-rate FP16-input/FP32-accumulate ceiling gives
+`47.38% x 2 = 94.76%`. That independently agrees with the 95.73%
+mode-specific Tensor counter and the 96.5% clock-scaled result from timed
+TFLOP/s. The FP16-accumulate path increases DRAM pressure by 1.83x while
+active-warp occupancy stays flat, excluding occupancy as the explanation for
+the accumulation-mode gap.
+
+These counters support increased operand-feed pressure, but DRAM throughput
+alone does not prove a specific memory-stall mechanism. Scheduler stall and
+cache-level counters would be required to attribute the remaining gap solely
+to memory starvation.
 
 This is not a controlled accumulator-dtype-only experiment: autotuning selects
 different launch configurations. FP32 accumulation uses 128 threads and 1,024

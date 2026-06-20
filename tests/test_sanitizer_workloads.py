@@ -49,8 +49,8 @@ def test_sanitizer_matmul_contiguous_and_strided(
 
 
 def test_sanitizer_layer_norm_forward_backward_strided_tail() -> None:
-    """Exercise row-strided LayerNorm forward and lock-reduced backward."""
-    rows, columns = 67, 1000
+    """Exercise a row-strided tail with multiple updates per lock slot."""
+    rows, columns = 513, 1000
     x_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
     dy_storage = torch.randn(rows * 3, columns, device="cuda", dtype=torch.float32)
     x = x_storage[::2].detach().requires_grad_(True)

@@ -190,7 +190,9 @@ def main() -> int:
             f"group={group_size}, rows/slot={result['rows_per_slot']}, "
             f"bitwise={result['bitwise_identical']}, hashes={result['unique_output_hashes']}, "
             f"dw_error={result['dweight_relative_frobenius']:.3e}, "
-            f"db_error={result['dbias_relative_frobenius']:.3e}"
+            f"db_error={result['dbias_relative_frobenius']:.3e}, "
+            f"dw_drift={result['max_repeat_relative_drift_dweight']:.3e}, "
+            f"db_drift={result['max_repeat_relative_drift_dbias']:.3e}"
         )
 
     first_group = group_sizes[0]

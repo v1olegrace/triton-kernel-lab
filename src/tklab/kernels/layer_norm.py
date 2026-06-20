@@ -9,6 +9,7 @@ kernel reduces those buffers across lock groups.
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, cast
@@ -125,18 +126,19 @@ def _layer_norm_backward_stage1_kernel(
     group_dw = partial_dw_ptr + partial_offsets
     group_db = partial_db_ptr + partial_offsets
 
-    while tl.atomic_cas(lock, 0, 1) == 1:
+    while tl.atomic_cas(lock, 0, 1, sem="acq_rel", scope="gpu") == 1:
         pass
     initialized = tl.load(count)
     if initialized == 0:
-        tl.atomic_xchg(count, 1)
+        tl.atomic_xchg(count, 1, sem="acq_rel", scope="gpu")
     else:
         partial_dw += tl.load(group_dw, mask=mask, other=0.0)
         partial_db += tl.load(group_db, mask=mask, other=0.0)
     tl.store(group_dw, partial_dw, mask=mask)
     tl.store(group_db, partial_db, mask=mask)
+    # Join every lane's vector stores before the device-scoped unlock publishes them.
     tl.debug_barrier()
-    tl.atomic_xchg(lock, 0)
+    tl.atomic_xchg(lock, 0, sem="acq_rel", scope="gpu")
 
 
 @triton.jit  # type: ignore[untyped-decorator]
@@ -379,6 +381,15 @@ def _launch_backward(
         raise ValueError("upstream gradient metadata must match the input")
     if dy.stride(1) != 1:
         dy = dy.contiguous()
+    if torch.are_deterministic_algorithms_enabled():
+        message = (
+            "Triton LayerNorm backward uses an order-dependent lock reduction "
+            "and is not deterministic"
+        )
+        if torch.is_deterministic_algorithms_warn_only_enabled():
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
+        else:
+            raise RuntimeError(message)
 
     buffers = _make_backward_buffers(x, weight)
     _launch_backward_stage1(dy, x, weight, mean, rstd, buffers)
@@ -435,7 +446,8 @@ def layer_norm(
     """Apply LayerNorm over the final dimension with Triton autograd.
 
     FP16 is intended for inference-oriented throughput experiments. FP32 is
-    supported for numerically strict gradient validation.
+    supported for numerically strict gradient validation. Backward uses an
+    order-dependent reduction and rejects PyTorch's deterministic mode.
     """
     result = _LayerNormFunction.apply(x, weight, bias, eps)  # type: ignore[no-untyped-call]
     return cast(torch.Tensor, result)

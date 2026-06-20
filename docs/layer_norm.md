@@ -48,15 +48,25 @@ dbias = sum_rows(dy)
 
 FP32 gradient tests compare `dx`, `dweight`, and `dbias` with
 `torch.nn.functional.layer_norm` using relative Frobenius error below
-`1e-2`. The adversarial problem uses 67 rows, width 1000, and independent
-row-strided `x` and `dy` views.
+`1e-2`. One adversarial problem uses 67 rows, width 1000, and independent
+row-strided `x` and `dy` views. A second combines the same non-power-of-two,
+row-strided layout with 1,025 rows, forcing up to five updates per default
+lock slot.
 
 ## Lock-reduced parameter gradients
 
 Backward stage 1 computes `dx` and assigns each row to one of a bounded number
 of partial-gradient buffers. Rows sharing a buffer serialize updates through
-an `atomic_cas` spinlock. The lock protects vector loads, additions, and
-stores; `tl.debug_barrier` ensures all lanes finish before release.
+an `atomic_cas` spinlock. Acquisition and release explicitly use Triton's
+`acq_rel` memory semantics at GPU scope. Triton 3.7.1 already maps omitted
+atomic semantics to `acq_rel` and omitted scope to `gpu`; spelling them out
+makes the synchronization contract reviewable and guards against accidental
+weakening.
+
+The lock protects vector loads, additions, and stores. `tl.debug_barrier` is
+an intra-program barrier, not the device fence by itself. It remains necessary
+to join stores issued by every lane before the device-scoped atomic unlock
+publishes the completed vector to the next program acquiring that lock.
 
 Backward stage 2 reduces the `(group_count, N)` FP32 partial buffers into the
 final `dweight` and `dbias`. This differs from split-K GEMM: contention is
@@ -113,6 +123,19 @@ The lock-reduction structure follows the official Triton LayerNorm tutorial:
 <https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html>.
 The custom autograd function implements first-order gradients only; higher-
 order differentiation is outside the current contract.
+
+## Determinism
+
+The parameter-gradient result is numerically stable but not bitwise
+deterministic. Programs can acquire each lock in different orders, and FP32
+addition is not associative. The backward therefore rejects
+`torch.use_deterministic_algorithms(True)` and emits a warning in PyTorch's
+`warn_only=True` mode.
+
+A deterministic implementation would write one partial row per input row and
+reduce those partials in a fixed order. That alternative requires an
+`M x N` FP32 buffer instead of the bounded lock-group buffer and is outside
+the current memory/performance contract.
 
 ## Contention validation
 

@@ -313,7 +313,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 - Matmul currently accepts FP16 inputs only.
 - LayerNorm requires a contiguous final dimension and a feature row no larger
   than 64 KiB. FP16 backward is not claimed as training-grade numerics, and
-  higher-order gradients are not supported.
+  higher-order gradients are not supported. Its lock-reduced parameter
+  gradients are numerically stable but not bitwise deterministic; backward
+  rejects PyTorch deterministic mode.
 - The contiguous matmul fast path matches the measured cuBLAS peak in FP32
   accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
   designs and profiler evidence remain future work for broader shapes.

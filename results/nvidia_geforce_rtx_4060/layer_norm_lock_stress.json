@@ -15,10 +15,10 @@
       "runs": 50,
       "bitwise_identical": false,
       "unique_output_hashes": 50,
-      "max_repeat_relative_drift_dweight": 9.295289942201634e-07,
-      "max_repeat_relative_drift_dbias": 9.370967291033594e-07,
-      "dweight_relative_frobenius": 1.5969418427630444e-06,
-      "dbias_relative_frobenius": 1.59878379690781e-06
+      "max_repeat_relative_drift_dweight": 9.228515978065843e-07,
+      "max_repeat_relative_drift_dbias": 9.414460464540753e-07,
+      "dweight_relative_frobenius": 1.5670025277358945e-06,
+      "dbias_relative_frobenius": 1.6084753724499024e-06
     },
     {
       "group_size": 32,
@@ -26,10 +26,10 @@
       "runs": 50,
       "bitwise_identical": false,
       "unique_output_hashes": 50,
-      "max_repeat_relative_drift_dweight": 4.59930362239902e-07,
-      "max_repeat_relative_drift_dbias": 4.980008156962867e-07,
-      "dweight_relative_frobenius": 8.390711627725977e-07,
-      "dbias_relative_frobenius": 8.686694172865828e-07
+      "max_repeat_relative_drift_dweight": 4.6746396265007206e-07,
+      "max_repeat_relative_drift_dbias": 5.037776986682729e-07,
+      "dweight_relative_frobenius": 8.339779924426693e-07,
+      "dbias_relative_frobenius": 8.827597639537998e-07
     },
     {
       "group_size": 128,
@@ -37,24 +37,24 @@
       "runs": 50,
       "bitwise_identical": false,
       "unique_output_hashes": 50,
-      "max_repeat_relative_drift_dweight": 1.856970754943177e-07,
-      "max_repeat_relative_drift_dbias": 2.0035903958159906e-07,
-      "dweight_relative_frobenius": 4.5949400373501703e-07,
-      "dbias_relative_frobenius": 4.6219548721637693e-07
+      "max_repeat_relative_drift_dweight": 1.937120828188199e-07,
+      "max_repeat_relative_drift_dbias": 2.0456103300148243e-07,
+      "dweight_relative_frobenius": 4.517083880273276e-07,
+      "dbias_relative_frobenius": 4.6290733735077083e-07
     }
   ],
   "group_invariance": [
     {
       "reference_group_size": 8,
       "group_size": 32,
-      "dweight_relative_frobenius": 1.7734944322000956e-06,
-      "dbias_relative_frobenius": 1.7646697187956306e-06
+      "dweight_relative_frobenius": 1.7461152310715988e-06,
+      "dbias_relative_frobenius": 1.7979847370952484e-06
     },
     {
       "reference_group_size": 8,
       "group_size": 128,
-      "dweight_relative_frobenius": 1.6565247733524302e-06,
-      "dbias_relative_frobenius": 1.6750730083003873e-06
+      "dweight_relative_frobenius": 1.6203988479901454e-06,
+      "dbias_relative_frobenius": 1.6812175545055652e-06
     }
   ],
   "interpretation": {

@@ -116,6 +116,26 @@ from 11.79% to 21.63%, while active-warp occupancy remains approximately 32%.
 These values include the different autotuned launch configurations selected
 by each production variant.
 
+| Independent measurement | FP32 accumulate | FP16 accumulate |
+|---|---:|---:|
+| timed throughput / clock-scaled theoretical peak | 96.5% | 80.0% |
+| NCU mode-specific Tensor operations / peak | 95.73% | 89.91% |
+| NCU SM throughput / full-rate peak | 47.38% | 86.90% |
+| NCU DRAM throughput / peak | 11.79% | 21.63% |
+| NCU active warps / peak | 32.26% | 31.95% |
+
+For FP32 accumulation, the Ada Tensor path has half the FP16-accumulate
+operation rate. Normalizing `47.38%` from the full-rate denominator gives
+`94.76%`, agreeing with both the mode-specific 95.73% hardware counter and
+the independently timed 96.5% result. There is no material FP32-accumulate
+Tensor-pipe headroom at this shape.
+
+FP16 accumulation nearly doubles HMMA issue and raises DRAM pressure by 1.83x
+without changing active-warp occupancy. The counters rule out occupancy as
+the cause of the sub-2x speedup and support increased operand-feed pressure.
+They do not, by themselves, identify a particular memory-stall source; that
+would require scheduler-stall and cache-level profiling.
+
 The contiguous fast path uses signed int32 address arithmetic. Public
 validation rejects layouts whose maximum relative offset exceeds
 `2^31 - 1`; larger tensors require an explicitly audited int64-addressing

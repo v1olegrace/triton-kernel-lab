@@ -64,3 +64,58 @@ def test_layer_norm_gradients_match_pytorch() -> None:
     assert_relative_frobenius(dx_tri, dx_ref, max_relative_error=1e-2)
     assert_relative_frobenius(dw_tri, dw_ref, max_relative_error=1e-2)
     assert_relative_frobenius(db_tri, db_ref, max_relative_error=1e-2)
+
+
+def test_layer_norm_gradients_match_under_strided_tail_contention() -> None:
+    """Combine a non-power-of-two width with repeated updates per lock slot."""
+    torch.manual_seed(2)
+    x, weight, bias, dy = _strided_problem(rows=1025, columns=1000)
+
+    reference = F.layer_norm(x, (x.shape[-1],), weight, bias)
+    dx_ref, dw_ref, db_ref = torch.autograd.grad(
+        reference,
+        (x, weight, bias),
+        grad_outputs=dy,
+    )
+
+    x_tri = x.detach().requires_grad_(True)
+    weight_tri = weight.detach().requires_grad_(True)
+    bias_tri = bias.detach().requires_grad_(True)
+    output = layer_norm(x_tri, weight_tri, bias_tri)
+    dx_tri, dw_tri, db_tri = torch.autograd.grad(
+        output,
+        (x_tri, weight_tri, bias_tri),
+        grad_outputs=dy,
+    )
+
+    assert_relative_frobenius(dx_tri, dx_ref, max_relative_error=1e-2)
+    assert_relative_frobenius(dw_tri, dw_ref, max_relative_error=1e-2)
+    assert_relative_frobenius(db_tri, db_ref, max_relative_error=1e-2)
+
+
+def test_layer_norm_backward_rejects_deterministic_mode() -> None:
+    """Honor PyTorch's deterministic-algorithm contract."""
+    previous_mode = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        torch.use_deterministic_algorithms(True)
+        x, weight, bias, dy = _strided_problem(rows=8, columns=16)
+        output = layer_norm(x, weight, bias)
+        with pytest.raises(RuntimeError, match="not deterministic"):
+            torch.autograd.grad(output, (x, weight, bias), grad_outputs=dy)
+    finally:
+        torch.use_deterministic_algorithms(previous_mode, warn_only=previous_warn_only)
+
+
+def test_layer_norm_backward_warns_in_deterministic_warn_only_mode() -> None:
+    """Follow PyTorch's warn-only deterministic policy without hiding the risk."""
+    previous_mode = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        x, weight, bias, dy = _strided_problem(rows=8, columns=16)
+        output = layer_norm(x, weight, bias)
+        with pytest.warns(RuntimeWarning, match="not deterministic"):
+            torch.autograd.grad(output, (x, weight, bias), grad_outputs=dy)
+    finally:
+        torch.use_deterministic_algorithms(previous_mode, warn_only=previous_warn_only)
