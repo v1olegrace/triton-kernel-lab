@@ -26,6 +26,8 @@ BenchmarkMetadataFn: TypeAlias = Callable[
     [int, torch.dtype],
     Mapping[str, BenchmarkScalar],
 ]
+BenchmarkCall: TypeAlias = Callable[[], object]
+BenchmarkCallFactory: TypeAlias = Callable[[TensorArgs, torch.Tensor], BenchmarkCall]
 Bound: TypeAlias = Literal["memory", "compute"]
 ComputeMode: TypeAlias = Literal["fp16_fp32acc", "fp16_fp16acc"]
 
@@ -53,6 +55,9 @@ class KernelSpec:
         reference_launch_fn: Optional allocation-free PyTorch baseline.
         assert_fn: Optional kernel-specific numerical assertion.
         benchmark_metadata: Optional metadata captured after autotuning.
+        benchmark_call_factory: Optional factory that prepares auxiliary
+            buffers outside the timed region and returns the Triton call.
+        reference_call_factory: Optional equivalent for the PyTorch baseline.
         compute_mode: Accumulation mode for compute-bound kernels.
         supports_interpreter: Whether ``TRITON_INTERPRET=1`` is supported.
         rtol: Optional relative tolerance overriding the dtype default.
@@ -80,6 +85,8 @@ class KernelSpec:
     reference_launch_fn: LaunchFn | None = None
     assert_fn: AssertFn | None = None
     benchmark_metadata: BenchmarkMetadataFn | None = None
+    benchmark_call_factory: BenchmarkCallFactory | None = None
+    reference_call_factory: BenchmarkCallFactory | None = None
     compute_mode: ComputeMode | None = None
     supports_interpreter: bool = True
     rtol: float | None = None

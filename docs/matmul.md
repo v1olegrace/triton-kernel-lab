@@ -21,6 +21,12 @@ fallback and M, N, and K tails together.
 The test suite enforces relative Frobenius error below `1e-2` for FP32
 accumulation and below `5e-2` for FP16 accumulation.
 
+FP16 accumulation is an inference-oriented throughput mode, not a free
+training optimization. Accumulating thousands of products in FP16 discards
+mantissa bits and can fail on ill-conditioned or high-dynamic-range inputs.
+The aggregate tolerance and well-conditioned random tests demonstrate the
+implemented instruction path; they do not establish training safety.
+
 ## Compute baselines
 
 PyTorch 2.12 does not expose a distinct cuBLAS FP16-accumulate GEMM through
@@ -43,8 +49,8 @@ Sources:
 
 The best clean measurements with Triton 3.7.1 were:
 
-- FP32 accumulation: 30.95 TFLOP/s at N=2048, 100.3% of the global measured
-  cuBLAS peak and 100.2% of cuBLAS at the same size.
+- FP32 accumulation: 30.95 TFLOP/s at N=2048, or 96.5% of the
+  clock-scaled theoretical ceiling and 100.2% of cuBLAS at the same size.
 - FP16 accumulation: 53.09 TFLOP/s at N=2048, 80.0% of the clock-scaled
   theoretical ceiling.
 - End-to-end accumulation-mode gap: 1.72x at N=2048 and 1.63x at N=4096.
@@ -69,7 +75,9 @@ by the compiler.
 ## Split-K experiment
 
 Split-K with FP32 atomic merging was implemented and measured before deciding
-whether to keep it in the production registry. It regressed on this workload.
+whether to keep it in the production registry. It regressed in this
+small-square-GEMM regime on AD107, where atomic merge contention outweighed
+the extra wave parallelism.
 
 The wave-quantization premise for N=512 assumed a 128x128 winner and only 16
 output programs. The actual FP32-accumulate winner is 64x64, which launches 64
@@ -83,8 +91,10 @@ FP32-output experiment, increasing `SPLIT_K` produced:
 
 The extra programs did not compensate for FP32 output traffic and atomic
 merge overhead. The autotuner also selected split 1 for the FP16-accumulate
-path. Keeping split-K in the public kernel would therefore have made the code
-more complex and slower.
+path. Keeping this split-K design in the public kernel would therefore have
+made the measured workload more complex and slower. Low-batch inference where
+small GEMMs dominate would justify revisiting the problem with stream-K rather
+than treating this result as a universal rejection of K splitting.
 
 The production autotune space includes stages 5 and 6. The final large-N
 FP32 winners still use four stages; deeper pipelines are retained because a
@@ -93,6 +103,11 @@ six-stage configuration wins the small N=512 FP16-accumulate case.
 These measurements reject the proposed optimization, but they do not prove a
 hardware ceiling. Attributing the remaining gap solely to SM89 would require
 counter-level evidence from a profiler.
+
+The contiguous fast path uses signed int32 address arithmetic. Public
+validation rejects layouts whose maximum relative offset exceeds
+`2^31 - 1`; larger tensors require an explicitly audited int64-addressing
+variant.
 
 ## cuBLAS denominator
 

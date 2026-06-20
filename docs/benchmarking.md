@@ -32,9 +32,14 @@ Kernel byte models are dtype-aware:
 
 - vector add: two reads and one write;
 - fused softmax: one global read and one global write.
+- LayerNorm forward: one effective input read and one output write; affine
+  parameters and FP32 row statistics are amortized across 4096 rows.
 
 Small working sets may be influenced by cache. Large working sets are the
 relevant points when interpreting DRAM roofline utilization.
+`triton.testing.do_bench` flushes L2 between measured repetitions. Values
+slightly above 100%, such as the committed vector-add 100.12%, are treated as
+measurement noise rather than super-roofline performance.
 
 ## Compute roofline
 
@@ -68,6 +73,8 @@ Adversarial cases run on real GPU where supported:
 - vector add: stride-2/stride-3, length 1009;
 - softmax: row stride and 1000 columns;
 - matmul: `129×193 @ 193×257`.
+- LayerNorm: row-strided FP32 input/upstream gradient and 1000 columns,
+  including all three backward gradients.
 
 ## Result interpretation
 

@@ -38,6 +38,8 @@ Triton version, and generated JSON artifacts.
 5. Define bytes moved or FLOPs explicitly.
 6. Document numerical tolerances and unsupported layouts.
 7. Run correctness tests before committing benchmark results.
+8. Autograd kernels must compare every returned gradient with a PyTorch
+   reference on real GPU and document reduced-precision limitations.
 
 ## Commit and review expectations
 

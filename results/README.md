@@ -5,6 +5,8 @@ Each subdirectory is named from `torch.cuda.get_device_name()` and contains:
 - `peaks.json`: empirical bandwidth, cuBLAS sweeps, clocks, versions, and
   theoretical provenance;
 - `<kernel>.json`: per-size timing and performance metrics;
+- `layer_norm_backward.json`: gradient errors and two-stage backward timing;
+- `layer_norm_backward_stages.png`: stage timing and incremental overhead;
 - `*_speedup.png`: Triton/PyTorch comparisons;
 - `*_tflops.png`: compute throughput curves;
 - cross-kernel comparison plots where applicable.

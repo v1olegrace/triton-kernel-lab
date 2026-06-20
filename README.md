@@ -53,11 +53,13 @@ and plots then consume the same contract.
 | `fused_softmax` | reduction, `-inf` tail sentinel, FP32 reduction | bandwidth roofline |
 | `matmul_fp32acc` | Tensor Cores, L2 grouping, autotune, FP32 accumulate | % of cuBLAS |
 | `matmul_fp16acc` | FP16 Tensor Core accumulation and accuracy trade-off | % theoretical |
+| `layer_norm_forward` | FP32 statistics, autograd, lock-reduced backward | bandwidth roofline |
 
 Kernel-specific analysis is available in:
 
 - [Fused softmax](docs/fused_softmax.md)
 - [Matrix multiplication](docs/matmul.md)
+- [LayerNorm with backward](docs/layer_norm.md)
 - [Benchmark methodology](docs/benchmarking.md)
 - [Engineering review](docs/code_review.md)
 
@@ -81,6 +83,7 @@ Representative committed results:
 | cuBLAS FP16 input / FP32 accumulate | ~30.9 TFLOP/s |
 | Triton matmul FP32 accumulate | ~31.0 TFLOP/s |
 | Triton matmul FP16 accumulate | ~53.1 TFLOP/s |
+| LayerNorm forward vs native PyTorch, FP16 | ~1.5–2.3× |
 
 These are observations from one machine, not portable promises. Inspect
 [`results/nvidia_geforce_rtx_4060/`](results/nvidia_geforce_rtx_4060/) for
@@ -166,6 +169,7 @@ uv sync --extra dev
 import torch
 
 from tklab.kernels.fused_softmax import softmax
+from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
 from tklab.kernels.vector_add import vector_add
 
@@ -179,6 +183,10 @@ probabilities = softmax(scores)
 a = torch.randn(2048, 2048, device="cuda", dtype=torch.float16)
 b = torch.randn_like(a)
 c = matmul_fp32acc(a, b)
+
+weight = torch.ones(2048, device="cuda", dtype=torch.float16, requires_grad=True)
+bias = torch.zeros_like(weight, requires_grad=True)
+normalized = layer_norm(a, weight, bias)
 ```
 
 ### Benchmark CLI
@@ -207,6 +215,13 @@ uv run tklab-bench \
   --force-peaks \
   --kernel matmul_fp32acc \
   --kernel matmul_fp16acc
+```
+
+Benchmark LayerNorm forward and its two backward stages:
+
+```bash
+uv run tklab-bench --kernel layer_norm_forward
+uv run python benchmarks/layer_norm_backward.py
 ```
 
 The CLI writes versioned JSON and PNG files under `results/<gpu_slug>/`.
@@ -253,11 +268,13 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 ```text
 .
 ├── benchmarks/
+│   ├── layer_norm_backward.py  # two-stage backward study
 │   └── run.py                  # compatibility entry point
 ├── docs/
 │   ├── benchmarking.md
 │   ├── code_review.md
 │   ├── fused_softmax.md
+│   ├── layer_norm.md
 │   └── matmul.md
 ├── results/
 │   └── <gpu_slug>/             # committed JSON and PNG evidence
@@ -272,6 +289,7 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │   │   └── tolerances.py
 │   └── kernels/
 │       ├── fused_softmax.py
+│       ├── layer_norm.py
 │       ├── matmul.py
 │       └── vector_add.py
 ├── tests/
@@ -287,6 +305,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   Other GPUs require a sourced `GpuTheoreticalProfile`.
 - The fused softmax supports contiguous columns and up to 65,536 columns.
 - Matmul currently accepts FP16 inputs only.
+- LayerNorm requires a contiguous final dimension and a feature row no larger
+  than 64 KiB. FP16 backward is not claimed as training-grade numerics, and
+  higher-order gradients are not supported.
 - The contiguous matmul fast path matches the measured cuBLAS peak in FP32
   accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
   designs and profiler evidence remain future work for broader shapes.

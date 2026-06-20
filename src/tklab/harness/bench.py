@@ -82,7 +82,11 @@ def bench_spec(
         for size in spec.sizes:
             args = spec.make_inputs(size, torch_device, dtype)
             output = spec.make_output(args)
-            launch = partial(spec.launch_fn, args, output)
+            launch = (
+                spec.benchmark_call_factory(args, output)
+                if spec.benchmark_call_factory is not None
+                else partial(spec.launch_fn, args, output)
+            )
 
             median_ms, low_ms, high_ms = triton.testing.do_bench(
                 launch,
@@ -149,7 +153,9 @@ def _benchmark_reference(
 ) -> float:
     """Benchmark the PyTorch reference with allocation removed when possible."""
     reference_call: Callable[[], object]
-    if spec.reference_launch_fn is not None:
+    if spec.reference_call_factory is not None:
+        reference_call = spec.reference_call_factory(args, output)
+    elif spec.reference_launch_fn is not None:
         reference_call = partial(spec.reference_launch_fn, args, output)
     else:
         reference_call = partial(spec.ref_fn, *args)

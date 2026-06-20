@@ -61,6 +61,7 @@ def test_registry_contains_expected_kernels() -> None:
     assert set(REGISTRY) == {
         "vector_add",
         "fused_softmax",
+        "layer_norm_forward",
         "matmul_fp32acc",
         "matmul_fp16acc",
     }

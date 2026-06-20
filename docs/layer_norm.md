@@ -1,0 +1,115 @@
+# LayerNorm with backward
+
+The LayerNorm implementation is the first lab kernel with a custom
+`torch.autograd.Function` and a reduction across Triton programs.
+
+## Forward
+
+One program owns one row. Values, mean, biased variance, reciprocal standard
+deviation, normalization, and affine transformation are computed with FP32
+intermediates:
+
+```text
+mean = sum(x) / N
+variance = sum((x - mean)^2) / N
+rstd = 1 / sqrt(variance + eps)
+y = (x - mean) * rstd * weight + bias
+```
+
+Mean and reciprocal standard deviation are stored as FP32 vectors for
+backward. The final dimension must be contiguous; arbitrary positive row
+strides and non-power-of-two widths are supported. A feature row may use at
+most 64 KiB so one row remains within the intended fused working set.
+
+The forward benchmark uses the allocation-free
+`aten.native_layer_norm.out` CUDA baseline. Triton and PyTorch therefore both
+receive preallocated output/statistic buffers.
+
+## Backward formula
+
+For each row:
+
+```text
+x_hat = (x - mean) * rstd
+weighted_dy = weight * dy
+dx = rstd * (
+    weighted_dy
+    - mean(weighted_dy)
+    - x_hat * mean(weighted_dy * x_hat)
+)
+```
+
+The parameter gradients are:
+
+```text
+dweight = sum_rows(dy * x_hat)
+dbias = sum_rows(dy)
+```
+
+FP32 gradient tests compare `dx`, `dweight`, and `dbias` with
+`torch.nn.functional.layer_norm` using relative Frobenius error below
+`1e-2`. The adversarial problem uses 67 rows, width 1000, and independent
+row-strided `x` and `dy` views.
+
+## Lock-reduced parameter gradients
+
+Backward stage 1 computes `dx` and assigns each row to one of a bounded number
+of partial-gradient buffers. Rows sharing a buffer serialize updates through
+an `atomic_cas` spinlock. The lock protects vector loads, additions, and
+stores; `tl.debug_barrier` ensures all lanes finish before release.
+
+Backward stage 2 reduces the `(group_count, N)` FP32 partial buffers into the
+final `dweight` and `dbias`. This differs from split-K GEMM: contention is
+bounded by deliberate lock groups, each critical section accumulates a full
+vector, and the final reduction has a small fixed number of rows.
+
+Reproduce the stage study with:
+
+```bash
+uv run python benchmarks/layer_norm_backward.py
+```
+
+The resulting `layer_norm_backward.json` records all three gradient errors,
+stage-1 time, standalone stage-2 time, incremental stage-2 overhead in the
+real two-kernel sequence, lock-group count, and effective backward bandwidth.
+The standalone value includes a separate L2 flush and is not used as the
+end-to-end overhead estimate. Stage 1 includes the required reset of the
+lock/count array before every repetition; tensor allocation remains outside
+the timed region.
+
+## RTX 4060 measurements
+
+With 4096 rows and FP16 data, clean forward measurements range from 1.51x to
+2.33x over allocation-free native PyTorch LayerNorm. At widths 8192 and
+16384, the kernel sustains about 247.8-248.2 GB/s, effectively the measured
+memory roofline.
+
+On the FP32 strided width-1000 validation problem, relative Frobenius errors
+were approximately:
+
+- forward: `5.0e-8`;
+- `dx`: `1.0e-7`;
+- `dweight`: `1.5e-7`;
+- `dbias`: `1.3e-7`.
+
+The incremental stage-2 percentage is reported from the measured two-kernel
+sequence, not by adding isolated medians. Separate benchmark invocations
+flush L2, while the real stage 2 consumes stage-1 partials that remain hot.
+Across widths 1024 through 16384, stage 2 adds approximately 4.26% down to
+0.99% of the measured two-kernel sequence.
+
+## Numerical scope
+
+FP32 is the correctness reference mode for backward. FP16 forward is the
+performance mode. FP16 backward is available through autograd but is not
+presented as a training-grade numerical guarantee; reduced-precision
+parameter-gradient accumulation requires workload-specific validation.
+
+Welford or online variance is unnecessary while one row fits the 64 KiB fused
+limit. Wider or streaming normalization would require an online algorithm and
+is outside this implementation.
+
+The lock-reduction structure follows the official Triton LayerNorm tutorial:
+<https://triton-lang.org/main/getting-started/tutorials/05-layer-norm.html>.
+The custom autograd function implements first-order gradients only; higher-
+order differentiation is outside the current contract.

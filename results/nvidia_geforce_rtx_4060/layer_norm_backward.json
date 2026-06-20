@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kernel": "layer_norm_backward",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "compute_capability": "8.9",
+  "torch_version": "2.12.1+cu130",
+  "triton_version": "3.7.1",
+  "methodology": {
+    "allocations_timed": false,
+    "stage1_includes_lock_reset": true,
+    "stage2_incremental_definition": "total_kernel_ms - stage1_ms",
+    "stage2_standalone_has_separate_l2_flush": true
+  },
+  "gradient_validation": {
+    "rows": 67,
+    "columns": 1000,
+    "forward_relative_frobenius": 4.970067735143857e-08,
+    "dx_relative_frobenius": 1.0356867363725542e-07,
+    "dweight_relative_frobenius": 1.4616506405218388e-07,
+    "dbias_relative_frobenius": 1.2925615067160834e-07
+  },
+  "rows": [
+    {
+      "rows": 4096,
+      "columns": 1024,
+      "stage1_ms": 0.1382399946451187,
+      "stage2_standalone_ms": 0.02457600086927414,
+      "total_kernel_ms": 0.1443839967250824,
+      "stage2_incremental_ms": 0.006144002079963684,
+      "stage2_incremental_pct_total": 4.255320686033031,
+      "effective_gbps": 174.2978762938496,
+      "group_size": 256,
+      "group_count": 256
+    },
+    {
+      "rows": 4096,
+      "columns": 2048,
+      "stage1_ms": 0.2385919988155365,
+      "stage2_standalone_ms": 0.018432000651955605,
+      "total_kernel_ms": 0.2428160011768341,
+      "stage2_incremental_ms": 0.004224002361297607,
+      "stage2_incremental_pct_total": 1.739589788492324,
+      "effective_gbps": 207.28307754045125,
+      "group_size": 128,
+      "group_count": 128
+    },
+    {
+      "rows": 4096,
+      "columns": 4096,
+      "stage1_ms": 0.447488009929657,
+      "stage2_standalone_ms": 0.028672000393271446,
+      "total_kernel_ms": 0.4546560049057007,
+      "stage2_incremental_ms": 0.007167994976043701,
+      "stage2_incremental_pct_total": 1.5765754545638082,
+      "effective_gbps": 221.4054030164594,
+      "group_size": 128,
+      "group_count": 128
+    },
+    {
+      "rows": 4096,
+      "columns": 8192,
+      "stage1_ms": 0.8550400137901306,
+      "stage2_standalone_ms": 0.03993599861860275,
+      "total_kernel_ms": 0.8642560243606567,
+      "stage2_incremental_ms": 0.009216010570526123,
+      "stage2_incremental_pct_total": 1.0663519039214997,
+      "effective_gbps": 232.94786073251115,
+      "group_size": 96,
+      "group_count": 96
+    },
+    {
+      "rows": 4096,
+      "columns": 16384,
+      "stage1_ms": 1.8452479839324951,
+      "stage2_standalone_ms": 0.05119999870657921,
+      "total_kernel_ms": 1.8636800050735474,
+      "stage2_incremental_ms": 0.018432021141052246,
+      "stage2_incremental_pct_total": 0.9890121206899386,
+      "effective_gbps": 216.0527466645809,
+      "group_size": 64,
+      "group_count": 64
+    }
+  ]
+}

@@ -18,6 +18,8 @@ from tklab.registry import (
     register,
 )
 
+_MAX_INT32_OFFSET = 2**31 - 1
+
 
 def _configs() -> list[triton.Config]:
     """Return autotune configurations that fit the RTX 4060 SM89 limits.
@@ -175,6 +177,13 @@ def _validate(a: torch.Tensor, b: torch.Tensor) -> None:
         raise ValueError(f"dtype mismatch: {a.dtype} != {b.dtype}")
     if a.dtype != torch.float16:
         raise ValueError("matmul currently supports float16 inputs only")
+    for name, tensor in (("left", a), ("right", b)):
+        max_relative_offset = sum(
+            (dimension - 1) * stride
+            for dimension, stride in zip(tensor.shape, tensor.stride(), strict=True)
+        )
+        if max_relative_offset > _MAX_INT32_OFFSET:
+            raise ValueError(f"{name} input strides exceed the signed int32 offset range")
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:

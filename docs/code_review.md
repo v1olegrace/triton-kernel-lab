@@ -50,8 +50,10 @@ portfolio refactor.
 
 - Theoretical compute calibration has an audited profile only for RTX 4060.
 - GitHub-hosted CI cannot execute real-GPU tests.
-- Matmul performance remains below cuBLAS and needs a structurally different
-  kernel or deeper Nsight Compute work rather than more tuning of the current
-  design.
+- The contiguous matmul path now reaches the FP16-input/FP32-accumulate
+  silicon ceiling; broader layouts and small-GEMM stream-K remain open work.
+- LayerNorm backward introduces lock-protected shared reduction state. It is
+  covered by gradient tests, but race-focused sanitizer/profiler work remains
+  a deliberate next phase.
 - Publishing placeholders in README, LICENSE, badges, and security contact
   must be replaced by the repository owner.
