@@ -156,6 +156,25 @@ def gpu_slug(device: int = 0) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name).strip("_")
 
 
+def gpu_utilization_pct(device: int = 0) -> int:
+    """Return the current whole-device utilization percentage.
+
+    Args:
+        device: CUDA device index.
+
+    Returns:
+        Integer utilization percentage reported by ``nvidia-smi``.
+
+    Raises:
+        RuntimeError: If ``nvidia-smi`` cannot provide the value.
+    """
+    return _nvidia_smi_integer(
+        "utilization.gpu",
+        device=device,
+        error_message="unable to query GPU utilization with nvidia-smi",
+    )
+
+
 def measured_peak_bw_gbps(
     device: int = 0,
     *,
@@ -466,9 +485,23 @@ def _sm_clock_mhz(device: int = 0) -> int:
         RuntimeError: If ``nvidia-smi`` is missing, fails, or returns an
             unparsable value.
     """
+    return _nvidia_smi_integer(
+        "clocks.sm",
+        device=device,
+        error_message="unable to query SM clock with nvidia-smi",
+    )
+
+
+def _nvidia_smi_integer(
+    field: str,
+    *,
+    device: int,
+    error_message: str,
+) -> int:
+    """Query one integer-valued ``nvidia-smi`` field."""
     command = [
         "nvidia-smi",
-        "--query-gpu=clocks.sm",
+        f"--query-gpu={field}",
         "--format=csv,noheader,nounits",
         "-i",
         str(device),
@@ -483,7 +516,7 @@ def _sm_clock_mhz(device: int = 0) -> int:
         first_line = result.stdout.strip().splitlines()[0]
         return int(first_line)
     except (FileNotFoundError, subprocess.CalledProcessError, IndexError, ValueError) as error:
-        raise RuntimeError("unable to query SM clock with nvidia-smi") from error
+        raise RuntimeError(error_message) from error
 
 
 def _profile_for(gpu_name: str) -> GpuTheoreticalProfile:

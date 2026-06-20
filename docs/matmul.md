@@ -5,21 +5,21 @@ The lab registers two variants of the same tiled Triton kernel:
 - `matmul_fp32acc` emits dense FP16 Tensor Core MMA with FP32 accumulation.
 - `matmul_fp16acc` emits dense FP16 Tensor Core MMA with FP16 accumulation.
 
-`M`, `N`, `K`, and all strides are runtime values. Tile sizes, pipeline
-stages, warp count, grouping, and accumulator type are compile-time values.
-The K tail loads zero, the additive identity, while the output store masks
-the M and N tails.
+`M`, `N`, `K`, and all strides are runtime values. A compile-time contiguous
+fast path specializes the common row-major layout; arbitrary positive strides
+use the generic path. Tile sizes, pipeline stages, warp count, grouping, and
+accumulator type are compile-time values. M, N, and K tails load zero, the
+additive identity, while the output store masks invalid coordinates.
 
 ## Numerical policy
 
 Correctness uses a float32 PyTorch reference and relative Frobenius error,
 rather than elementwise `allclose`. The GPU adversarial case multiplies
-`129x193` by `193x257`, exercising M, N, and K tails together.
+strided `129x193` by strided `193x257`, exercising the generic-layout
+fallback and M, N, and K tails together.
 
-The observed adversarial relative errors were approximately:
-
-- FP32 accumulation: `2.1e-4`
-- FP16 accumulation: `7.6e-4`
+The test suite enforces relative Frobenius error below `1e-2` for FP32
+accumulation and below `5e-2` for FP16 accumulation.
 
 ## Compute baselines
 
@@ -41,11 +41,13 @@ Sources:
 
 ## RTX 4060 result
 
-The best measured results with Triton 3.7.1 were:
+The best clean measurements with Triton 3.7.1 were:
 
-- FP32 accumulation: about 20.7 TFLOP/s, or 67% of measured cuBLAS.
-- FP16 accumulation: about 27.7 TFLOP/s.
-- End-to-end accumulation-mode gap: about 1.34x at 4096.
+- FP32 accumulation: 30.95 TFLOP/s at N=2048, 100.3% of the global measured
+  cuBLAS peak and 100.2% of cuBLAS at the same size.
+- FP16 accumulation: 53.09 TFLOP/s at N=2048, 80.0% of the clock-scaled
+  theoretical ceiling.
+- End-to-end accumulation-mode gap: 1.72x at N=2048 and 1.63x at N=4096.
 
 PTX inspection confirms that the two variants select different instructions:
 
@@ -53,14 +55,54 @@ PTX inspection confirms that the two variants select different instructions:
 - `mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16`
 
 The missing ideal 2x is therefore not a failure to propagate `out_dtype`.
-The conventional Triton pipeline remains limited by non-MMA work and code
-generation on SM89. Expanded tile searches, grouping from 1 through 32,
-`BK=32/64`, two through five stages, two through eight warps, and register
-limits did not close the gap. Larger 256x256 candidates either regressed or
-exceeded the 101,376-byte per-block shared-memory limit reported by the
-compiler.
+FP16 accumulation makes non-MMA work proportionally more expensive, but
+specializing contiguous strides removed the dominant code-generation penalty:
+the compiler can fold `stride_ak=1`, `stride_bk=N`, and contiguous output
+addressing instead of carrying fully dynamic stride arithmetic through the
+inner loop.
 
-This result does not meet the original 85% cuBLAS target. Reaching that level
-requires a different kernel structure or deeper profiling, such as a
-persistent GEMM and Nsight Compute analysis, rather than more tuning of the
-same tutorial-style kernel.
+The search covers grouping from 1 through 32, `BK=32/64`, two through six
+stages, and two through eight warps. Larger 256x256 candidates either
+regressed or exceeded the 101,376-byte per-block shared-memory limit reported
+by the compiler.
+
+## Split-K experiment
+
+Split-K with FP32 atomic merging was implemented and measured before deciding
+whether to keep it in the production registry. It regressed on this workload.
+
+The wave-quantization premise for N=512 assumed a 128x128 winner and only 16
+output programs. The actual FP32-accumulate winner is 64x64, which launches 64
+output programs across 24 SMs before any K splitting. In a controlled 64x64,
+FP32-output experiment, increasing `SPLIT_K` produced:
+
+| N | split 1 | split 2 | split 4 | split 8 |
+|---:|---:|---:|---:|---:|
+| 512 | 13.54 | 4.54 | 3.64 | 2.40 TFLOP/s |
+| 1024 | 25.30 | 12.54 | 8.80 | 5.41 TFLOP/s |
+
+The extra programs did not compensate for FP32 output traffic and atomic
+merge overhead. The autotuner also selected split 1 for the FP16-accumulate
+path. Keeping split-K in the public kernel would therefore have made the code
+more complex and slower.
+
+The production autotune space includes stages 5 and 6. The final large-N
+FP32 winners still use four stages; deeper pipelines are retained because a
+six-stage configuration wins the small N=512 FP16-accumulate case.
+
+These measurements reject the proposed optimization, but they do not prove a
+hardware ceiling. Attributing the remaining gap solely to SM89 would require
+counter-level evidence from a profiler.
+
+## cuBLAS denominator
+
+Result schema 4 separates two quantities:
+
+- `pct_cublas_same_size`: Triton divided by cuBLAS at the same N;
+- `pct_cublas_peak`: Triton divided by the best cuBLAS result in the full
+  size sweep.
+
+For example, the final FP32 kernel reaches 15.42 TFLOP/s at N=512: 49.9% of
+the global 30.9 TFLOP/s cuBLAS peak, but 117.7% of cuBLAS at the same size.
+The former is a roofline-utilization number; the latter is the valid
+same-shape scheduling comparison.

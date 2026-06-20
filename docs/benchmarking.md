@@ -9,6 +9,13 @@ All GPU timings use `triton.testing.do_bench`. It uses CUDA events, performs
 warmup, and clears L2 between measured repetitions. Wall-clock timing around
 asynchronous CUDA launches is intentionally avoided.
 
+Before allocating benchmark inputs, the CLI checks whole-device utilization
+through `nvidia-smi`. It refuses to run above 10% pre-existing utilization,
+because desktop applications, games, and animated wallpapers can depress both
+Triton and cuBLAS clocks. `--allow-busy-gpu` is an explicit escape hatch for
+diagnostics; results produced with it should not be committed as reference
+measurements.
+
 Triton launchers and production PyTorch references receive preallocated output
 buffers. Allocation is therefore outside the timed region. A pedagogical
 multi-pass baseline may allocate intermediates because those intermediates
@@ -67,8 +74,21 @@ Adversarial cases run on real GPU where supported:
 `speedup` always means Triton divided into the measured PyTorch production
 baseline. `speedup_vs_naive` is a separate pedagogical comparison.
 
-For memory-bound kernels, `% peak` is the primary metric. For FP32-accumulating
-GEMM, `% cuBLAS` is the practical efficiency metric and `% theoretical`
-provides context. For FP16 accumulation, PyTorch currently does not expose a
-distinct fair cuBLAS baseline, so only the theoretical denominator and direct
-comparison against the FP32-accumulating Triton kernel are reported.
+For memory-bound kernels, `% peak` is the primary metric. FP32-accumulating
+GEMM reports two deliberately separate cuBLAS comparisons:
+
+- `pct_cublas_same_size` compares Triton with the allocation-free cuBLAS
+  observation for the same matrix size. This is the valid scheduling and
+  implementation-efficiency comparison.
+- `pct_cublas_peak` compares Triton with the maximum cuBLAS throughput from
+  the complete calibration sweep. This is a practical roofline utilization,
+  not a same-shape speedup.
+
+Using the global cuBLAS peak as the denominator for a small matrix can make
+launch and wave effects look much worse than the vendor kernel at that same
+shape. The JSON therefore never labels the global ratio simply as
+`pct_cublas`.
+
+For FP16 accumulation, PyTorch currently does not expose a distinct fair
+cuBLAS baseline, so only the theoretical denominator and direct comparison
+against the FP32-accumulating Triton kernel are reported.

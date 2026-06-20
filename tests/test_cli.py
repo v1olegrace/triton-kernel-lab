@@ -24,6 +24,13 @@ def test_parse_args_selects_multiple_kernels() -> None:
     assert options.kernels == ("vector_add", "fused_softmax")
     assert options.warmup_ms == 10
     assert options.repetition_ms == 20
+    assert options.allow_busy_gpu is False
+
+
+def test_parse_args_allows_explicit_busy_gpu_override() -> None:
+    """Expose an explicit escape hatch without weakening the default guard."""
+    options = parse_args(["--allow-busy-gpu"])
+    assert options.allow_busy_gpu is True
 
 
 def test_parse_args_rejects_unknown_kernel() -> None:

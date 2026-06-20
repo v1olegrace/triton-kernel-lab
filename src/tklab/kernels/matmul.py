@@ -20,13 +20,26 @@ from tklab.registry import (
 
 
 def _configs() -> list[triton.Config]:
-    """Return autotune configurations that fit the RTX 4060 SM89 limits."""
+    """Return autotune configurations that fit the RTX 4060 SM89 limits.
+
+    The search includes deeper 128x128 pipelines to test whether extra
+    software-pipeline stages improve large-matrix throughput on Ada.
+    """
     space = (
         # BM, BN, BK, stages, warps, group_m
         (64, 64, 32, 2, 4, 8),
+        (64, 64, 32, 3, 4, 1),
+        (64, 64, 32, 4, 4, 1),
+        (64, 64, 32, 5, 4, 1),
+        (64, 64, 32, 4, 4, 8),
         (64, 128, 32, 4, 4, 8),
         (128, 64, 32, 4, 4, 8),
         (128, 128, 32, 4, 4, 8),
+        (128, 128, 32, 5, 4, 8),
+        (128, 128, 32, 6, 4, 8),
+        (128, 128, 32, 4, 8, 8),
+        (128, 128, 32, 5, 8, 8),
+        (128, 128, 32, 6, 8, 8),
         (128, 128, 32, 4, 4, 4),
         (64, 256, 32, 4, 4, 8),
         (64, 256, 32, 4, 4, 32),
@@ -57,7 +70,7 @@ def _configs() -> list[triton.Config]:
 
 @triton.autotune(  # type: ignore[untyped-decorator]
     configs=_configs(),
-    key=["M", "N", "K", "ACC_DTYPE"],
+    key=["M", "N", "K", "ACC_DTYPE", "CONTIGUOUS"],
 )
 @triton.jit  # type: ignore[untyped-decorator]
 def _matmul_kernel(
@@ -78,6 +91,7 @@ def _matmul_kernel(
     BLOCK_K: tl.constexpr,
     GROUP_M: tl.constexpr,
     ACC_DTYPE: tl.constexpr,
+    CONTIGUOUS: tl.constexpr,
 ) -> None:
     """Compute one grouped output tile and mask M, N, and K tails."""
     program_id = tl.program_id(axis=0)
@@ -100,38 +114,49 @@ def _matmul_kernel(
     tl.assume(stride_cm > 0)
     tl.assume(stride_cn > 0)
 
-    offsets_m = (program_m * BLOCK_M + tl.arange(0, BLOCK_M)) % M
-    offsets_n = (program_n * BLOCK_N + tl.arange(0, BLOCK_N)) % N
+    offsets_m = program_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offsets_n = program_n * BLOCK_N + tl.arange(0, BLOCK_N)
     offsets_k = tl.arange(0, BLOCK_K)
-    a_block_ptrs = a_ptr + offsets_m[:, None] * stride_am + offsets_k[None, :] * stride_ak
-    b_block_ptrs = b_ptr + offsets_k[:, None] * stride_bk + offsets_n[None, :] * stride_bn
+    if CONTIGUOUS:
+        a_block_ptrs = a_ptr + offsets_m[:, None] * K + offsets_k[None, :]
+        b_block_ptrs = b_ptr + offsets_k[:, None] * N + offsets_n[None, :]
+    else:
+        a_block_ptrs = a_ptr + offsets_m[:, None] * stride_am + offsets_k[None, :] * stride_ak
+        b_block_ptrs = b_ptr + offsets_k[:, None] * stride_bk + offsets_n[None, :] * stride_bn
 
     accumulator = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_DTYPE)
     for k_block in range(0, tl.cdiv(K, BLOCK_K)):
         remaining_k = K - k_block * BLOCK_K
         a = tl.load(
             a_block_ptrs,
-            mask=offsets_k[None, :] < remaining_k,
+            mask=(offsets_m[:, None] < M) & (offsets_k[None, :] < remaining_k),
             other=0.0,
         )
         b = tl.load(
             b_block_ptrs,
-            mask=offsets_k[:, None] < remaining_k,
+            mask=(offsets_k[:, None] < remaining_k) & (offsets_n[None, :] < N),
             other=0.0,
         )
         if tl.float32 == ACC_DTYPE:
             accumulator = tl.dot(a, b, accumulator)
         else:
             accumulator = tl.dot(a, b, accumulator, out_dtype=tl.float16)
-        a_block_ptrs += BLOCK_K * stride_ak
-        b_block_ptrs += BLOCK_K * stride_bk
+        if CONTIGUOUS:
+            a_block_ptrs += BLOCK_K
+            b_block_ptrs += BLOCK_K * N
+        else:
+            a_block_ptrs += BLOCK_K * stride_ak
+            b_block_ptrs += BLOCK_K * stride_bk
 
     output = accumulator.to(c_ptr.dtype.element_ty)
     output_offsets_m = program_m * BLOCK_M + tl.arange(0, BLOCK_M)
     output_offsets_n = program_n * BLOCK_N + tl.arange(0, BLOCK_N)
-    output_ptrs = (
-        c_ptr + output_offsets_m[:, None] * stride_cm + output_offsets_n[None, :] * stride_cn
-    )
+    if CONTIGUOUS:
+        output_ptrs = c_ptr + output_offsets_m[:, None] * N + output_offsets_n[None, :]
+    else:
+        output_ptrs = (
+            c_ptr + output_offsets_m[:, None] * stride_cm + output_offsets_n[None, :] * stride_cn
+        )
     output_mask = (output_offsets_m[:, None] < M) & (output_offsets_n[None, :] < N)
     tl.store(output_ptrs, output, mask=output_mask)
 
@@ -194,6 +219,7 @@ def _launch_factory(accumulator_dtype: tl.dtype) -> LaunchFn:
             output.stride(0),
             output.stride(1),
             ACC_DTYPE=accumulator_dtype,
+            CONTIGUOUS=a.is_contiguous() and b.is_contiguous(),
         )
 
     return launch
@@ -236,11 +262,10 @@ def _make_inputs(
 
 
 def _make_adversarial(device: torch.device) -> TensorArgs:
-    """Create matrices with simultaneous M-, N-, and K-tail tiles."""
-    return (
-        torch.randn(129, 193, device=device, dtype=torch.float16),
-        torch.randn(193, 257, device=device, dtype=torch.float16),
-    )
+    """Create strided matrices with simultaneous M-, N-, and K-tail tiles."""
+    left_storage = torch.randn(129, 386, device=device, dtype=torch.float16)
+    right_storage = torch.randn(386, 257, device=device, dtype=torch.float16)
+    return left_storage[:, ::2], right_storage[::2, :]
 
 
 def _assert_fp32acc(output: torch.Tensor, reference: torch.Tensor) -> None:
@@ -274,7 +299,6 @@ def _autotune_metadata_factory(mma_opcode: str) -> BenchmarkMetadataFn:
 
 _metadata_fp32acc = _autotune_metadata_factory("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32")
 _metadata_fp16acc = _autotune_metadata_factory("mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16")
-
 
 _SIZES = (512, 1024, 2048, 4096, 8192)
 

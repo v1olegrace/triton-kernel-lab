@@ -79,8 +79,8 @@ Representative committed results:
 | fused softmax vs `torch.softmax`, FP16/N=4096 | ~1.32× |
 | fused softmax vs naive multi-pass baseline | ~1.8–6.4× |
 | cuBLAS FP16 input / FP32 accumulate | ~30.9 TFLOP/s |
-| Triton matmul FP32 accumulate | ~20.7 TFLOP/s |
-| Triton matmul FP16 accumulate | ~27.7 TFLOP/s |
+| Triton matmul FP32 accumulate | ~31.0 TFLOP/s |
+| Triton matmul FP16 accumulate | ~53.1 TFLOP/s |
 
 These are observations from one machine, not portable promises. Inspect
 [`results/nvidia_geforce_rtx_4060/`](results/nvidia_geforce_rtx_4060/) for
@@ -195,6 +195,11 @@ Benchmark one kernel using an existing peak cache:
 uv run tklab-bench --kernel fused_softmax
 ```
 
+The CLI refuses to benchmark when pre-existing GPU utilization exceeds 10%.
+Close games, animated wallpapers, and other GPU workloads before producing
+reference artifacts. `--allow-busy-gpu` exists only for intentional diagnostic
+runs.
+
 Recalibrate rooflines and benchmark both matmul modes:
 
 ```bash
@@ -235,6 +240,8 @@ strides, and the adversarial `129×193 @ 193×257` matmul.
 - Memory cost models depend on dtype.
 - Compute calibration warms the GPU to steady state and records SM clocks.
 - Measured cuBLAS throughput and theoretical silicon ceilings remain separate.
+- Matmul reports same-size cuBLAS efficiency separately from global cuBLAS
+  peak utilization.
 - FP16/FP16-accumulate is not mislabeled as a cuBLAS baseline when PyTorch
   does not expose that mode.
 - JSON writes are atomic.
@@ -280,8 +287,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   Other GPUs require a sourced `GpuTheoreticalProfile`.
 - The fused softmax supports contiguous columns and up to 65,536 columns.
 - Matmul currently accepts FP16 inputs only.
-- The conventional SM89 matmul reaches ~67% of measured cuBLAS in FP32
-  accumulation; deeper profiling or a persistent design is future work.
+- The contiguous matmul fast path matches the measured cuBLAS peak in FP32
+  accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
+  designs and profiler evidence remain future work for broader shapes.
 - GitHub-hosted CI has no GPU. Real-GPU tests and benchmark artifacts are run
   locally; CI covers static checks, CPU unit tests, and Triton interpreter
   cases.

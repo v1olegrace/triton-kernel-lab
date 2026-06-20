@@ -29,7 +29,9 @@ class BenchRow(TypedDict):
     pct_peak: NotRequired[float]
     naive_ms: NotRequired[float]
     speedup_vs_naive: NotRequired[float]
-    pct_cublas: NotRequired[float]
+    reference_tflops: NotRequired[float]
+    pct_cublas_same_size: NotRequired[float]
+    pct_cublas_peak: NotRequired[float]
     pct_theoretical: NotRequired[float]
     block_m: NotRequired[int]
     block_n: NotRequired[int]
@@ -190,10 +192,13 @@ def _add_performance_metrics(
     if spec.flops is None or theoretical_tflops is None:
         raise ValueError(f"{spec.name}: missing compute cost model or theoretical peak")
     teraflops = spec.flops(size, dtype) / seconds / 1e12
+    reference_teraflops = spec.flops(size, dtype) / (row["torch_ms"] * 1e-3) / 1e12
     row["tflops"] = teraflops
+    row["reference_tflops"] = reference_teraflops
     row["pct_theoretical"] = 100.0 * teraflops / theoretical_tflops
     if cublas_tflops is not None:
-        row["pct_cublas"] = 100.0 * teraflops / cublas_tflops
+        row["pct_cublas_same_size"] = 100.0 * teraflops / reference_teraflops
+        row["pct_cublas_peak"] = 100.0 * teraflops / cublas_tflops
 
 
 def _validate_benchmark_request(

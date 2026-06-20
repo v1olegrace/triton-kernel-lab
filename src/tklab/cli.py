@@ -18,10 +18,11 @@ from tklab.harness.plots import (
     plot_speedup,
     plot_throughput,
 )
-from tklab.harness.roofline import PeakResults, load_or_measure_peaks
+from tklab.harness.roofline import PeakResults, gpu_utilization_pct, load_or_measure_peaks
 from tklab.registry import REGISTRY, KernelSpec
 
-RESULT_SCHEMA_VERSION = 3
+RESULT_SCHEMA_VERSION = 4
+MAX_IDLE_GPU_UTILIZATION_PCT = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,7 @@ class BenchmarkOptions:
     warmup_ms: int
     repetition_ms: int
     list_kernels: bool
+    allow_busy_gpu: bool
 
 
 def parse_args(argv: list[str] | None = None) -> BenchmarkOptions:
@@ -79,6 +81,11 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkOptions:
         action="store_true",
         help="Print registered kernels and exit.",
     )
+    parser.add_argument(
+        "--allow-busy-gpu",
+        action="store_true",
+        help="Run despite pre-existing GPU utilization above 10%%.",
+    )
     namespace = parser.parse_args(argv)
     return BenchmarkOptions(
         device=namespace.device,
@@ -87,6 +94,7 @@ def parse_args(argv: list[str] | None = None) -> BenchmarkOptions:
         warmup_ms=namespace.warmup_ms,
         repetition_ms=namespace.repetition_ms,
         list_kernels=namespace.list_kernels,
+        allow_busy_gpu=namespace.allow_busy_gpu,
     )
 
 
@@ -111,6 +119,12 @@ def run_benchmarks(
     """
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for benchmarks")
+    utilization = gpu_utilization_pct(options.device)
+    if not options.allow_busy_gpu and utilization > MAX_IDLE_GPU_UTILIZATION_PCT:
+        raise RuntimeError(
+            f"GPU {options.device} is already {utilization}% utilized; "
+            "close GPU workloads or pass --allow-busy-gpu to accept contaminated results"
+        )
     selected_specs = _select_specs(options.kernels)
     root = project_root or Path(__file__).resolve().parents[2]
     results_root = root / "results"
@@ -271,7 +285,7 @@ def _print_result_summary(
     if spec.bound == "memory":
         metric_value, baseline_name = _pct_peak, "bandwidth peak"
     elif has_cublas_baseline:
-        metric_value, baseline_name = _pct_cublas, "cuBLAS"
+        metric_value, baseline_name = _pct_cublas_same_size, "same-size cuBLAS"
     else:
         metric_value, baseline_name = _pct_theoretical, "theoretical"
 
@@ -289,9 +303,9 @@ def _pct_peak(row: BenchRow) -> float:
     return row["pct_peak"]
 
 
-def _pct_cublas(row: BenchRow) -> float:
-    """Return a row's cuBLAS percentage."""
-    return row["pct_cublas"]
+def _pct_cublas_same_size(row: BenchRow) -> float:
+    """Return a row's throughput relative to cuBLAS at the same shape."""
+    return row["pct_cublas_same_size"]
 
 
 def _pct_theoretical(row: BenchRow) -> float:
