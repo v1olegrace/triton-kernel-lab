@@ -202,13 +202,15 @@ official Triton fused-attention tutorial and the FlashAttention papers:
 ## Backward
 
 `attention_noncausal` and `attention_causal` are differentiable. The forward
-optionally stores the per-query base-2 log-sum-exp `M = row_max + log2(row_sum)`
-(a `STORE_M` compile-time flag, so the inference-only and benchmark launchers
-remain byte-for-byte identical). The public wrapper also selects this
+optionally stores the per-query base-2 log-sum-exp
+`softmax_lse = row_max + log2(row_sum)` (a `STORE_LSE` compile-time flag, so
+the inference-only and benchmark launchers remain byte-for-byte identical).
+The name is deliberately explicit: this value is the complete normalized
+log-sum-exp, not the running row maximum. The public wrapper also selects this
 statistics-free path whenever gradients are disabled or no Q/K/V input
 requires gradients. The backward then recomputes probabilities
-from `Q`, `K`, `V`, `M`, and the saved output rather than retaining the score
-matrix, preserving the `O(N)` activation footprint.
+from `Q`, `K`, `V`, `softmax_lse`, and the saved output rather than retaining
+the score matrix, preserving the `O(N)` activation footprint.
 
 Three kernels run per backward:
 
@@ -219,7 +221,7 @@ Three kernels run per backward:
 3. a query pass that, for each query block, streams the contributing key blocks
    and accumulates `dQ = scale * dS K`.
 
-Here `P = exp2(scale_log2 * QK^T - M)`, `dP = dO V^T`, and
+Here `P = exp2(scale_log2 * QK^T - softmax_lse)`, `dP = dO V^T`, and
 `dS = P * (dP - delta)`. The softmax scale multiplies `dQ` and `dK` only, never
 `dV`. The recomputed `P` is masked exactly as the forward masks scores: the
 `key_index < sequence_length` tail for both variants, plus the
@@ -230,6 +232,25 @@ Probabilities, `dP`, and the accumulators are FP32; matmul operands are cast to
 FP16 for the Tensor Core path, matching the forward policy.
 The custom backward supports first-order gradients only and is explicitly
 marked non-differentiable for higher-order autograd.
+
+### Recompute cost
+
+The split avoids quadratic saved activations and gives every output block a
+single writer, but it deliberately recomputes work. Both gradient kernels
+rebuild `QK^T` and `dP = dO V^T`: the `dK/dV` kernel while owning one key/value
+block, and the `dQ` kernel while owning one query block. For dense non-causal
+attention, the leading matrix-multiply model is approximately:
+
+```text
+forward:  QK^T + PV                                      =  4 N^2 d FLOPs
+backward: 2(QK^T) + 2(dO V^T) + P^T dO + dS^T Q + dS K = 14 N^2 d FLOPs
+```
+
+Thus this implementation's backward is about `3.5x` the forward's leading
+matmul FLOPs, before elementwise softmax work. This is an intentional
+memory/ownership trade-off, not an unexplained throughput regression. A more
+aggressive implementation could fuse or share recomputed intermediates, but
+would require a different ownership and synchronization design.
 
 ### Backward correctness
 

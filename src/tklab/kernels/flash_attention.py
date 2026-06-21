@@ -127,7 +127,7 @@ def _flash_attention_forward_kernel(
     k_ptr: tl.tensor,
     v_ptr: tl.tensor,
     output_ptr: tl.tensor,
-    m_ptr: tl.tensor,
+    softmax_lse_ptr: tl.tensor,
     stride_qz: int,
     stride_qh: int,
     stride_qn: int,
@@ -149,7 +149,7 @@ def _flash_attention_forward_kernel(
     N_CTX: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     CAUSAL: tl.constexpr,
-    STORE_M: tl.constexpr,
+    STORE_LSE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ) -> None:
@@ -251,12 +251,17 @@ def _flash_attention_forward_kernel(
         output,
         mask=query_mask[:, None],
     )
-    if STORE_M:
+    if STORE_LSE:
         # Log-sum-exp in the base-2 domain the forward pass already works in:
-        # row_max is the scaled per-row maximum, so M = row_max + log2(row_sum)
-        # lets the backward recompute P = exp2(scaled_scores - M) exactly.
-        log_sum_exp = row_max + tl.math.log2(row_sum)
-        tl.store(m_ptr + head_batch * N_CTX + offsets_m, log_sum_exp, mask=query_mask)
+        # row_max is the scaled per-row maximum, so
+        # softmax_lse = row_max + log2(row_sum) lets the backward recompute
+        # P = exp2(scaled_scores - softmax_lse) without a separate division.
+        softmax_lse = row_max + tl.math.log2(row_sum)
+        tl.store(
+            softmax_lse_ptr + head_batch * N_CTX + offsets_m,
+            softmax_lse,
+            mask=query_mask,
+        )
 
 
 def _validate(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
@@ -293,16 +298,16 @@ def _launch_forward(
     k: torch.Tensor,
     v: torch.Tensor,
     output: torch.Tensor,
-    m: torch.Tensor,
+    softmax_lse: torch.Tensor,
     *,
     causal: bool,
-    store_m: bool,
+    store_lse: bool,
 ) -> None:
     """Launch online-softmax attention into preallocated buffers.
 
-    ``m`` receives the per-query base-2 log-sum-exp when ``store_m`` is set;
-    otherwise it is an unused placeholder and the forward path is byte-for-byte
-    identical to the inference-only launcher.
+    ``softmax_lse`` receives the per-query base-2 log-sum-exp when
+    ``store_lse`` is set; otherwise it is an unused placeholder and the
+    forward path is byte-for-byte identical to the inference-only launcher.
     """
     _validate(q, k, v)
     if output.shape != q.shape or output.device != q.device or output.dtype != q.dtype:
@@ -310,15 +315,15 @@ def _launch_forward(
     if not output.is_contiguous():
         raise ValueError("attention output must be contiguous")
     batch, heads, n_ctx, head_dim = q.shape
-    if store_m:
+    if store_lse:
         if (
-            m.shape != (batch, heads, n_ctx)
-            or m.device != q.device
-            or m.dtype != torch.float32
-            or not m.is_contiguous()
+            softmax_lse.shape != (batch, heads, n_ctx)
+            or softmax_lse.device != q.device
+            or softmax_lse.dtype != torch.float32
+            or not softmax_lse.is_contiguous()
         ):
             raise ValueError("attention log-sum-exp buffer must be contiguous float32 BxHxN")
-        assert_int32_addressable(m, name="log-sum-exp buffer")
+        assert_int32_addressable(softmax_lse, name="log-sum-exp buffer")
 
     def grid(metadata: dict[str, Any]) -> tuple[int, int]:
         return triton.cdiv(n_ctx, metadata["BLOCK_M"]), batch * heads
@@ -328,7 +333,7 @@ def _launch_forward(
         k,
         v,
         output,
-        m,
+        softmax_lse,
         *q.stride(),
         *k.stride(),
         *v.stride(),
@@ -338,7 +343,7 @@ def _launch_forward(
         N_CTX=n_ctx,
         HEAD_DIM=head_dim,
         CAUSAL=causal,
-        STORE_M=store_m,
+        STORE_LSE=store_lse,
     )
 
 
@@ -348,7 +353,7 @@ def _launch_factory(*, causal: bool) -> LaunchFn:
     def launch(args: TensorArgs, output: torch.Tensor) -> None:
         """Launch forward attention without saving backward statistics."""
         q, k, v = args
-        _launch_forward(q, k, v, output, output, causal=causal, store_m=False)
+        _launch_forward(q, k, v, output, output, causal=causal, store_lse=False)
 
     return launch
 
@@ -398,7 +403,7 @@ def _attn_bwd_dkdv_kernel(
     do_ptr: tl.tensor,
     dk_ptr: tl.tensor,
     dv_ptr: tl.tensor,
-    m_ptr: tl.tensor,
+    softmax_lse_ptr: tl.tensor,
     delta_ptr: tl.tensor,
     stride_z: int,
     stride_h: int,
@@ -437,11 +442,15 @@ def _attn_bwd_dkdv_kernel(
         q_addr = base + offsets_m[:, None] * stride_n + offsets_d[None, :] * stride_d
         q = tl.load(q_ptr + q_addr, mask=query_mask[:, None], other=0.0)
         do = tl.load(do_ptr + q_addr, mask=query_mask[:, None], other=0.0)
-        m_i = tl.load(m_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+        softmax_lse_i = tl.load(
+            softmax_lse_ptr + head_batch * N_CTX + offsets_m,
+            mask=query_mask,
+            other=0.0,
+        )
         delta_i = tl.load(delta_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
 
         scores = tl.dot(q, tl.trans(k)) * sm_scale_log2
-        probabilities = tl.math.exp2(scores - m_i[:, None])
+        probabilities = tl.math.exp2(scores - softmax_lse_i[:, None])
         valid = query_mask[:, None] & key_mask[None, :]
         if CAUSAL:
             valid = valid & (offsets_m[:, None] >= offsets_n[None, :])
@@ -464,7 +473,7 @@ def _attn_bwd_dq_kernel(
     v_ptr: tl.tensor,
     do_ptr: tl.tensor,
     dq_ptr: tl.tensor,
-    m_ptr: tl.tensor,
+    softmax_lse_ptr: tl.tensor,
     delta_ptr: tl.tensor,
     stride_z: int,
     stride_h: int,
@@ -492,7 +501,11 @@ def _attn_bwd_dq_kernel(
     q_addr = base + offsets_m[:, None] * stride_n + offsets_d[None, :] * stride_d
     q = tl.load(q_ptr + q_addr, mask=query_mask[:, None], other=0.0)
     do = tl.load(do_ptr + q_addr, mask=query_mask[:, None], other=0.0)
-    m_i = tl.load(m_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+    softmax_lse_i = tl.load(
+        softmax_lse_ptr + head_batch * N_CTX + offsets_m,
+        mask=query_mask,
+        other=0.0,
+    )
     delta_i = tl.load(delta_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
     dq = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
 
@@ -506,7 +519,7 @@ def _attn_bwd_dq_kernel(
         v = tl.load(v_ptr + kv_addr, mask=key_mask[:, None], other=0.0)
 
         scores = tl.dot(q, tl.trans(k)) * sm_scale_log2
-        probabilities = tl.math.exp2(scores - m_i[:, None])
+        probabilities = tl.math.exp2(scores - softmax_lse_i[:, None])
         valid = query_mask[:, None] & key_mask[None, :]
         if CAUSAL:
             valid = valid & (offsets_m[:, None] >= offsets_n[None, :])
@@ -525,7 +538,7 @@ def _launch_backward(
     k: torch.Tensor,
     v: torch.Tensor,
     output: torch.Tensor,
-    m: torch.Tensor,
+    softmax_lse: torch.Tensor,
     do: torch.Tensor,
     *,
     causal: bool,
@@ -561,7 +574,7 @@ def _launch_backward(
         do,
         dk,
         dv,
-        m,
+        softmax_lse,
         delta,
         *strides,
         heads,
@@ -579,7 +592,7 @@ def _launch_backward(
         v,
         do,
         dq,
-        m,
+        softmax_lse,
         delta,
         *strides,
         heads,
@@ -609,9 +622,21 @@ class _FlashAttentionFunction(torch.autograd.Function):
         _validate(q, k, v)
         output = torch.empty_like(q)
         batch, heads, n_ctx, _ = q.shape
-        m = torch.empty((batch, heads, n_ctx), dtype=torch.float32, device=q.device)
-        _launch_forward(q, k, v, output, m, causal=causal, store_m=True)
-        ctx.save_for_backward(q, k, v, output, m)
+        softmax_lse = torch.empty(
+            (batch, heads, n_ctx),
+            dtype=torch.float32,
+            device=q.device,
+        )
+        _launch_forward(
+            q,
+            k,
+            v,
+            output,
+            softmax_lse,
+            causal=causal,
+            store_lse=True,
+        )
+        ctx.save_for_backward(q, k, v, output, softmax_lse)
         ctx.causal = causal
         return output
 
@@ -622,8 +647,16 @@ class _FlashAttentionFunction(torch.autograd.Function):
         do: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
         """Compute Q, K, and V gradients with a recompute-based backward."""
-        q, k, v, output, m = ctx.saved_tensors
-        dq, dk, dv = _launch_backward(q, k, v, output, m, do, causal=ctx.causal)
+        q, k, v, output, softmax_lse = ctx.saved_tensors
+        dq, dk, dv = _launch_backward(
+            q,
+            k,
+            v,
+            output,
+            softmax_lse,
+            do,
+            causal=ctx.causal,
+        )
         return dq, dk, dv, None
 
 
@@ -646,7 +679,7 @@ def _attention(
             output,
             output,
             causal=causal,
-            store_m=False,
+            store_lse=False,
         )
         return output
     result = _FlashAttentionFunction.apply(q, k, v, causal)  # type: ignore[no-untyped-call]
