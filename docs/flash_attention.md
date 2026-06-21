@@ -111,9 +111,26 @@ For batch 1, 16 heads, dimension 64, and FP16:
 
 The measured log-log slopes are 1.00 for Flash and 1.87 for the materialized
 path; the latter approaches the expected quadratic slope as fixed overhead is
-amortized. WSL/WDDM allowed allocation beyond the RTX 4060's 8 GiB dedicated
-memory through oversubscription, so the observed OOM occurred at `N=24576`,
-not exactly when the dedicated-memory figure was crossed.
+amortized. PyTorch allocator rounding and the remaining linear Q/K/V/output
+terms also keep a finite-range empirical slope below exactly 2.00.
+
+This run used WSL2 over a Windows WDDM driver with 8,188 MiB of reported
+dedicated GPU memory. WDDM GPU virtual addressing can back allocations through
+local or system-memory segments, and this environment demonstrably allowed the
+PyTorch allocation counter to exceed dedicated VRAM. The 16.0 GiB observation
+at `N=16384` is therefore a real allocation-footprint measurement, not a claim
+that 16 GiB remained resident in the RTX 4060's physical VRAM.
+
+The two retained FP16 quadratic tensors alone cross the reported dedicated
+capacity at approximately `N=11582`, before Q/K/V, output, and allocator
+overhead. On a platform that does not oversubscribe device allocations, OOM
+would occur around or below that point. The observed OOM at `N=24576` is
+specific to this WDDM/WSL environment. This study proves the `O(N)` versus
+`O(N^2)` footprint; it does not claim that paged execution beyond dedicated
+VRAM has useful performance.
+
+WDDM memory model reference:
+<https://learn.microsoft.com/en-us/windows-hardware/drivers/display/gpu-virtual-memory-in-wddm-2-0>.
 
 ## Performance methodology
 
@@ -144,10 +161,32 @@ non-causal result is 26.51 TFLOP/s, 82.67% of the clock-scaled
 FP16-input/FP32-accumulate ceiling; the best causal result is 25.02 TFLOP/s,
 78.00% of that ceiling under the exact lower-triangle FLOP count.
 
+Against the empirical 30.88 TFLOP/s cuBLAS FP16-input/FP32-accumulate peak,
+the 26.51 TFLOP/s non-causal result is 85.87%. This is the appropriate
+accumulation regime: both attention matrix products accumulate in FP32. The
+remaining gap includes online-softmax max, `exp2`, row-sum, and rescaling work
+interleaved with Tensor Core operations. The measurements are consistent with
+that non-MMA work reducing attainable HMMA duty cycle, but no attention NCU
+stall analysis is claimed.
+
 The autotuner favors 64x32 or 128x32 query/key tiles for most shapes, with
 four warps and two stages. The causal `N=8192` winner uses 128x64. These
 choices stay within the RTX 4060's per-block shared-memory limit and avoid
 pretending that one tile is universally optimal.
+
+## Specialization scope
+
+`N_CTX` is a Triton `constexpr` and an autotune key. Every distinct sequence
+length therefore selects or compiles a specialization. This is intentional
+for the fixed sweep and makes tile provenance unambiguous, but it can create
+compile-cache churn for production workloads with many arbitrary lengths. A
+production interface would normally bucket sequence lengths or use a
+runtime-length variant with a bounded specialization policy.
+
+`HEAD_DIM == 64` is a compile-time invariant, not a general FlashAttention
+claim. Supporting 128 or 256 changes register, shared-memory, tile, and
+occupancy trade-offs materially on AD107 and requires its own autotune and
+correctness study.
 
 The kernel follows the FlashAttention-2 forward structure described by the
 official Triton fused-attention tutorial and the FlashAttention papers:

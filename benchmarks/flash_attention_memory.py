@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import platform
 import subprocess
 import sys
 from pathlib import Path
@@ -19,6 +20,10 @@ from tklab.harness.roofline import gpu_slug, gpu_utilization_pct
 from tklab.kernels.flash_attention import attention_noncausal
 
 _DEFAULT_SIZES = (512, 1024, 2048, 4096, 8192, 12288, 16384, 24576)
+_BATCH = 1
+_HEADS = 16
+_HEAD_DIM = 64
+_DTYPE = torch.float16
 
 
 class WorkerResult(TypedDict):
@@ -32,6 +37,14 @@ class WorkerResult(TypedDict):
     output_finite: bool | None
     oom: bool
     error: str | None
+
+
+class DriverMetadata(TypedDict):
+    """Stable driver fields recorded with the memory study."""
+
+    driver_model: str
+    driver_version: str
+    reported_dedicated_memory_mib: int
 
 
 def _parse_args() -> argparse.Namespace:
@@ -65,10 +78,10 @@ def _worker(implementation: str, sequence_length: int, device_index: int) -> int
     """Measure one implementation in a fresh process so OOM is recoverable."""
     torch.cuda.set_device(device_index)
     torch.manual_seed(31)
-    shape = (1, 16, sequence_length, 64)
-    q = torch.randn(shape, device="cuda", dtype=torch.float16)
-    k = torch.randn(shape, device="cuda", dtype=torch.float16)
-    v = torch.randn(shape, device="cuda", dtype=torch.float16)
+    shape = (_BATCH, _HEADS, sequence_length, _HEAD_DIM)
+    q = torch.randn(shape, device="cuda", dtype=_DTYPE)
+    k = torch.randn(shape, device="cuda", dtype=_DTYPE)
+    v = torch.randn(shape, device="cuda", dtype=_DTYPE)
     if implementation == "flash":
         warm_output = attention_noncausal(q, k, v)
         torch.cuda.synchronize()
@@ -104,7 +117,7 @@ def _worker(implementation: str, sequence_length: int, device_index: int) -> int
             "peak_increment_bytes": None,
             "output_finite": None,
             "oom": True,
-            "error": str(error).splitlines()[0],
+            "error": type(error).__name__,
         }
     print(json.dumps(result, separators=(",", ":")))
     return 0
@@ -159,6 +172,42 @@ def _empirical_slope(rows: list[WorkerResult]) -> float | None:
     return math.log(memory_ratio) / math.log(size_ratio)
 
 
+def _quadratic_bytes_per_n_squared() -> int:
+    """Return bytes retained by FP16 score and probability matrices per N²."""
+    return 2 * _BATCH * _HEADS * torch.empty((), dtype=_DTYPE).element_size()
+
+
+def _dedicated_memory_crossing(total_memory_bytes: int) -> float:
+    """Estimate N where the two quadratic buffers alone fill device memory."""
+    if total_memory_bytes <= 0:
+        raise ValueError("total_memory_bytes must be positive")
+    return math.sqrt(total_memory_bytes / _quadratic_bytes_per_n_squared())
+
+
+def _driver_metadata(device: int) -> DriverMetadata:
+    """Query driver model, version, and reported dedicated memory."""
+    completed = subprocess.run(
+        [
+            "nvidia-smi",
+            f"--id={device}",
+            "--query-gpu=driver_model.current,driver_version,memory.total",
+            "--format=csv,noheader,nounits",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    driver_model, driver_version, memory_mib = (
+        field.strip() for field in completed.stdout.strip().split(",")
+    )
+    return {
+        "driver_model": driver_model,
+        "driver_version": driver_version,
+        "reported_dedicated_memory_mib": int(memory_mib),
+    }
+
+
 def main() -> int:
     """Run workers, persist JSON evidence, and generate the memory curve."""
     options = _parse_args()
@@ -195,6 +244,10 @@ def main() -> int:
     flash_rows = [row for row in measurements if row["implementation"] == "flash"]
     materialized_rows = [row for row in measurements if row["implementation"] == "materialized"]
     major, minor = torch.cuda.get_device_capability(options.device)
+    properties = torch.cuda.get_device_properties(options.device)
+    driver_metadata = _driver_metadata(options.device)
+    quadratic_bytes_per_n_squared = _quadratic_bytes_per_n_squared()
+    dedicated_memory_crossing = _dedicated_memory_crossing(properties.total_memory)
     payload = {
         "schema_version": 1,
         "study": "flash_attention_memory",
@@ -202,14 +255,28 @@ def main() -> int:
         "compute_capability": f"{major}.{minor}",
         "torch_version": torch.__version__,
         "triton_version": triton.__version__,
-        "batch": 1,
-        "heads": 16,
-        "head_dim": 64,
-        "dtype": "float16",
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "is_wsl": "microsoft" in platform.release().lower(),
+            **driver_metadata,
+            "torch_device_total_memory_bytes": properties.total_memory,
+        },
+        "batch": _BATCH,
+        "heads": _HEADS,
+        "head_dim": _HEAD_DIM,
+        "dtype": str(_DTYPE).removeprefix("torch."),
         "measurements": measurements,
         "empirical_log_log_slope": {
             "flash": _empirical_slope(flash_rows),
             "materialized": _empirical_slope(materialized_rows),
+        },
+        "analytical_context": {
+            "materialized_quadratic_buffers": 2,
+            "quadratic_element_dtype": str(_DTYPE).removeprefix("torch."),
+            "quadratic_bytes_per_n_squared": quadratic_bytes_per_n_squared,
+            "quadratic_only_dedicated_memory_crossing_sequence_length": dedicated_memory_crossing,
+            "oom_threshold_is_platform_dependent": True,
         },
     }
     root = script.parents[1]

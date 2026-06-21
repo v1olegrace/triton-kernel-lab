@@ -5,6 +5,15 @@
   "compute_capability": "8.9",
   "torch_version": "2.12.1+cu130",
   "triton_version": "3.7.1",
+  "platform": {
+    "system": "Linux",
+    "release": "6.6.87.2-microsoft-standard-WSL2",
+    "is_wsl": true,
+    "driver_model": "WDDM",
+    "driver_version": "610.62",
+    "reported_dedicated_memory_mib": 8188,
+    "torch_device_total_memory_bytes": 8585216000
+  },
   "batch": 1,
   "heads": 16,
   "head_dim": 64,
@@ -168,11 +177,18 @@
       "peak_increment_bytes": null,
       "output_finite": null,
       "oom": true,
-      "error": "CUDA out of memory. Tried to allocate 18.00 GiB. GPU 0 has a total capacity of 8.00 GiB of which 0 bytes is free. Including non-PyTorch memory, this process has 17179869184.00 GiB memory in use. Of the allocated memory 18.15 GiB is allocated by PyTorch, and 11.88 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+      "error": "OutOfMemoryError"
     }
   ],
   "empirical_log_log_slope": {
     "flash": 1.0,
     "materialized": 1.8704954401941405
+  },
+  "analytical_context": {
+    "materialized_quadratic_buffers": 2,
+    "quadratic_element_dtype": "float16",
+    "quadratic_bytes_per_n_squared": 64,
+    "quadratic_only_dedicated_memory_crossing_sequence_length": 11582.055085346468,
+    "oom_threshold_is_platform_dependent": true
   }
 }

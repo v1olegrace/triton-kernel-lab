@@ -89,7 +89,7 @@ Representative committed results:
 | NCU Tensor-path utilization, FP32 / FP16 accumulate | 95.73% / 89.91% |
 | LayerNorm forward vs native PyTorch, FP16 | ~1.5–2.3× |
 | Flash Attention forward vs PyTorch SDPA | ~0.86–0.97× |
-| Flash vs materialized attention at N=16384 | 32 MiB vs 16.0 GiB |
+| Flash vs materialized attention at N=16384, WDDM footprint | 32 MiB vs 16.0 GiB |
 
 These are observations from one machine, not portable promises. Inspect
 [`results/nvidia_geforce_rtx_4060/`](results/nvidia_geforce_rtx_4060/) for
@@ -324,8 +324,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   gradients are numerically stable but not bitwise deterministic; backward
   rejects PyTorch deterministic mode.
 - Flash Attention forward currently supports contiguous FP16 Q/K/V with
-  `head_dim=64`. Dropout, attention bias, grouped-query attention, and
-  backward are outside Phase 6A.
+  `head_dim=64` and specializes per compile-time sequence length. Dropout,
+  attention bias, grouped-query attention, variable-length production
+  bucketing, larger head dimensions, and backward are outside Phase 6A.
 - The contiguous matmul fast path matches the measured cuBLAS peak in FP32
   accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
   designs and profiler evidence remain future work for broader shapes.
