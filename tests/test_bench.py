@@ -8,6 +8,8 @@ import torch
 from tklab.harness.bench import BenchRow, _add_performance_metrics
 from tklab.kernels.flash_attention import ATTENTION_CAUSAL, ATTENTION_NONCAUSAL
 from tklab.kernels.matmul import MATMUL_FP32ACC
+from tklab.kernels.residual_rms_norm import RESIDUAL_RMS_NORM
+from tklab.kernels.rms_norm import RMS_NORM
 
 
 def test_compute_metrics_separate_same_size_cublas_from_peak() -> None:
@@ -50,3 +52,14 @@ def test_attention_flops_use_full_and_lower_triangular_pair_counts() -> None:
 
     assert ATTENTION_NONCAUSAL.flops(sequence_length, torch.float16) == (fixed_factor * full_pairs)
     assert ATTENTION_CAUSAL.flops(sequence_length, torch.float16) == (fixed_factor * causal_pairs)
+
+
+def test_norm_specs_expose_native_and_naive_baseline_metadata() -> None:
+    """Keep future norm benchmark JSONs explicit about baseline semantics."""
+    for spec in (RMS_NORM, RESIDUAL_RMS_NORM):
+        assert spec.naive_fn is not None or spec.naive_call_factory is not None
+        assert spec.benchmark_metadata is not None
+        metadata = spec.benchmark_metadata(1024, torch.float16)
+        assert metadata["reference_allocates_output"] is True
+        assert isinstance(metadata["reference_baseline"], str)
+        assert isinstance(metadata["naive_baseline"], str)

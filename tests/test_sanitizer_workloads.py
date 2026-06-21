@@ -11,6 +11,7 @@ from tklab.kernels.flash_attention import attention_causal, attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp16acc, matmul_fp32acc
+from tklab.kernels.residual_rms_norm import residual_rms_norm
 from tklab.kernels.rms_norm import rms_norm
 from tklab.kernels.vector_add import vector_add
 
@@ -74,6 +75,42 @@ def test_sanitizer_rms_norm_forward_backward_strided_tail() -> None:
     weight = torch.randn(columns, device="cuda", dtype=torch.float32, requires_grad=True)
     output = rms_norm(x, weight)
     torch.autograd.grad(output, (x, weight), grad_outputs=dy)
+    torch.cuda.synchronize()
+
+
+def test_sanitizer_residual_rms_norm_forward_backward_strided_tail() -> None:
+    """Exercise both fused outputs and their shared backward gradient."""
+    rows, columns = 513, 1000
+    x_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
+    residual_storage = torch.randn(
+        rows * 3,
+        columns,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    dsum_storage = torch.randn(
+        rows * 4,
+        columns,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    doutput_storage = torch.randn(
+        rows * 5,
+        columns,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    x = x_storage[::2].detach().requires_grad_(True)
+    residual = residual_storage[::3].detach().requires_grad_(True)
+    dsum = dsum_storage[::4]
+    doutput = doutput_storage[::5]
+    weight = torch.randn(columns, device="cuda", dtype=torch.float32, requires_grad=True)
+    residual_sum, output = residual_rms_norm(x, residual, weight)
+    torch.autograd.grad(
+        (residual_sum, output),
+        (x, residual, weight),
+        grad_outputs=(dsum, doutput),
+    )
     torch.cuda.synchronize()
 
 

@@ -29,6 +29,9 @@ class BenchRow(TypedDict):
     pct_peak: NotRequired[float]
     naive_ms: NotRequired[float]
     speedup_vs_naive: NotRequired[float]
+    reference_baseline: NotRequired[str]
+    naive_baseline: NotRequired[str]
+    reference_allocates_output: NotRequired[bool]
     reference_tflops: NotRequired[float]
     pct_cublas_same_size: NotRequired[float]
     pct_cublas_peak: NotRequired[float]
@@ -119,10 +122,15 @@ def bench_spec(
                 metadata = cast(BenchRow, dict(spec.benchmark_metadata(size, dtype)))
                 row.update(metadata)
 
-            if spec.naive_fn is not None:
+            naive_call: Callable[[], object] | None = None
+            if spec.naive_call_factory is not None:
+                naive_call = spec.naive_call_factory(args, output)
+            elif spec.naive_fn is not None:
+                naive_call = partial(spec.naive_fn, *args)
+            if naive_call is not None:
                 naive_ms = float(
                     triton.testing.do_bench(
-                        partial(spec.naive_fn, *args),
+                        naive_call,
                         warmup=warmup_ms,
                         rep=repetition_ms,
                         return_mode="median",

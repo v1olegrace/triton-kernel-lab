@@ -62,6 +62,8 @@ class KernelSpec:
         benchmark_call_factory: Optional factory that prepares auxiliary
             buffers outside the timed region and returns the Triton call.
         reference_call_factory: Optional equivalent for the PyTorch baseline.
+        naive_call_factory: Optional equivalent for a multi-output or
+            allocation-controlled naive baseline.
         compute_mode: Accumulation mode for compute-bound kernels.
         supports_interpreter: Whether ``TRITON_INTERPRET=1`` is supported.
         rtol: Optional relative tolerance overriding the dtype default.
@@ -91,6 +93,7 @@ class KernelSpec:
     benchmark_metadata: BenchmarkMetadataFn | None = None
     benchmark_call_factory: BenchmarkCallFactory | None = None
     reference_call_factory: BenchmarkCallFactory | None = None
+    naive_call_factory: BenchmarkCallFactory | None = None
     compute_mode: ComputeMode | None = None
     supports_interpreter: bool = True
     rtol: float | None = None

@@ -19,7 +19,13 @@ import torch.nn.functional as F
 import triton
 import triton.language as tl
 
-from tklab.registry import BenchmarkCall, KernelSpec, TensorArgs, register
+from tklab.registry import (
+    BenchmarkCall,
+    BenchmarkScalar,
+    KernelSpec,
+    TensorArgs,
+    register,
+)
 
 _ROWS = 4096
 _EPS = 1e-5
@@ -71,6 +77,7 @@ def _rms_norm_forward_kernel(
 def _rms_norm_backward_stage1_kernel(
     dx_ptr: tl.tensor,
     dy_ptr: tl.tensor,
+    incoming_dx_ptr: tl.tensor,
     partial_dw_ptr: tl.tensor,
     x_ptr: tl.tensor,
     weight_ptr: tl.tensor,
@@ -78,9 +85,11 @@ def _rms_norm_backward_stage1_kernel(
     lock_ptr: tl.tensor,
     x_row_stride: int,
     dy_row_stride: int,
+    incoming_dx_row_stride: int,
     dx_row_stride: int,
     n_cols: int,
     GROUP_SIZE_M: tl.constexpr,
+    ADD_INCOMING_DX: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ) -> None:
     """Compute one row's ``dx`` and lock-reduced weight-gradient partials."""
@@ -107,6 +116,13 @@ def _rms_norm_backward_stage1_kernel(
     # dx_j = rstd * (g_j - x_hat_j * (1/N) * Σ_i g_i * x_hat_i)
     mean_g_xhat = tl.sum(g * x_hat, axis=0) / n_cols
     dx = rstd * (g - x_hat * mean_g_xhat)
+    if ADD_INCOMING_DX:
+        incoming_dx = tl.load(
+            incoming_dx_ptr + row * incoming_dx_row_stride + columns,
+            mask=mask,
+            other=0.0,
+        ).to(tl.float32)
+        dx += incoming_dx
     tl.store(dx_ptr + row * dx_row_stride + columns, dx, mask=mask)
 
     partial_dw = dy * x_hat
@@ -297,12 +313,21 @@ def _launch_backward_stage1(
     weight: torch.Tensor,
     rstd: torch.Tensor,
     buffers: _BackwardBuffers,
+    *,
+    incoming_dx: torch.Tensor | None = None,
 ) -> None:
-    """Launch per-row ``dx`` and lock-protected weight-gradient partials."""
+    """Launch per-row ``dx`` and lock-protected weight-gradient partials.
+
+    ``incoming_dx`` is the optional direct gradient of a fused residual-sum
+    output. When present, it is added to the RMSNorm input gradient inside the
+    same program before the final store.
+    """
     rows, columns = x.shape
+    incoming = dy if incoming_dx is None else incoming_dx
     _rms_norm_backward_stage1_kernel[(rows,)](
         buffers.dx,
         dy,
+        incoming,
         buffers.partial_dw,
         x,
         weight,
@@ -310,9 +335,11 @@ def _launch_backward_stage1(
         buffers.locks,
         x.stride(0),
         dy.stride(0),
+        incoming.stride(0),
         buffers.dx.stride(0),
         columns,
         GROUP_SIZE_M=buffers.group_size,
+        ADD_INCOMING_DX=incoming_dx is not None,
         BLOCK_SIZE=buffers.block_size,
         num_warps=buffers.num_warps,
     )
@@ -339,6 +366,8 @@ def _launch_backward(
     x: torch.Tensor,
     weight: torch.Tensor,
     rstd: torch.Tensor,
+    *,
+    incoming_dx: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Launch both RMSNorm backward stages and return all gradients."""
     if dy.shape != x.shape or dy.device != x.device or dy.dtype != x.dtype:
@@ -349,6 +378,18 @@ def _launch_backward(
     max_relative_offset = (rows - 1) * dy.stride(0) + columns - 1
     if max_relative_offset > _MAX_INT32_OFFSET:
         raise ValueError("upstream gradient strides exceed signed int32 offsets")
+    if incoming_dx is not None:
+        if (
+            incoming_dx.shape != x.shape
+            or incoming_dx.device != x.device
+            or incoming_dx.dtype != x.dtype
+        ):
+            raise ValueError("incoming input gradient metadata must match the input")
+        if incoming_dx.stride(1) != 1:
+            incoming_dx = incoming_dx.contiguous()
+        max_incoming_offset = (rows - 1) * incoming_dx.stride(0) + columns - 1
+        if max_incoming_offset > _MAX_INT32_OFFSET:
+            raise ValueError("incoming input gradient strides exceed signed int32 offsets")
     if torch.are_deterministic_algorithms_enabled():
         message = (
             "Triton RMSNorm backward uses an order-dependent lock reduction "
@@ -360,7 +401,14 @@ def _launch_backward(
             raise RuntimeError(message)
 
     buffers = _make_backward_buffers(x, weight)
-    _launch_backward_stage1(dy, x, weight, rstd, buffers)
+    _launch_backward_stage1(
+        dy,
+        x,
+        weight,
+        rstd,
+        buffers,
+        incoming_dx=incoming_dx,
+    )
     _launch_backward_stage2(buffers, x.shape[1])
     return buffers.dx, buffers.dw
 
@@ -415,6 +463,16 @@ def _torch_rms_norm(
 ) -> torch.Tensor:
     """Return PyTorch RMSNorm with the lab's default epsilon."""
     return F.rms_norm(x, (x.shape[-1],), weight, _EPS)
+
+
+def _naive_rms_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+) -> torch.Tensor:
+    """Compose RMSNorm from ordinary PyTorch pointwise and reduction ops."""
+    mean_square = torch.mean(x.float() * x.float(), dim=-1, keepdim=True)
+    normalized = x.float() * torch.rsqrt(mean_square + _EPS)
+    return (normalized * weight.float()).to(x.dtype)
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:
@@ -489,6 +547,19 @@ def _bytes_moved(columns: int, dtype: torch.dtype) -> int:
     return 2 * _ROWS * columns * element_size
 
 
+def _benchmark_metadata(
+    columns: int,
+    dtype: torch.dtype,
+) -> dict[str, BenchmarkScalar]:
+    """Describe the two RMSNorm benchmark baselines."""
+    del columns, dtype
+    return {
+        "reference_baseline": "torch.nn.functional.rms_norm",
+        "naive_baseline": "manual PyTorch pointwise and reduction composition",
+        "reference_allocates_output": True,
+    }
+
+
 RMS_NORM = register(
     KernelSpec(
         name="rms_norm_forward",
@@ -504,6 +575,8 @@ RMS_NORM = register(
         bound="memory",
         bytes_moved=_bytes_moved,
         dtypes=(torch.float16,),
+        naive_fn=_naive_rms_norm,
+        benchmark_metadata=_benchmark_metadata,
         benchmark_call_factory=_make_benchmark_call,
         reference_call_factory=_make_reference_call,
         supports_interpreter=False,

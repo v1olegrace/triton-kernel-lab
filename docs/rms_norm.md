@@ -25,6 +25,20 @@ output while the Triton launcher reuses preallocated output and statistic
 buffers. This baseline limitation is documented explicitly; the comparison
 must not be described as strictly allocation-matched.
 
+The benchmark also records a deliberately decomposed PyTorch baseline made
+from separate FP32 pointwise, reduction, reciprocal-square-root, scaling, and
+cast operations. Run it together with fused residual RMSNorm in one clean GPU
+session:
+
+```bash
+uv run tklab-bench \
+  --kernel rms_norm_forward \
+  --kernel residual_rms_norm_forward
+```
+
+No RMSNorm performance number is claimed until the GPU-idle guard accepts
+that run and the resulting artifacts are committed.
+
 ## Backward formula
 
 For each row, define:
@@ -98,8 +112,8 @@ uv run python benchmarks/rms_norm_lock_stress.py
 On the RTX 4060, all 200 stage-1 launches released every lock, initialized
 every active count, and left every inactive count at zero. The most contended
 case assigns 1,025 rows to one lock slot. Its relative Frobenius error against
-the PyTorch FP32 reference was approximately `6.00e-7`, with maximum
-run-to-run drift of `7.39e-7`.
+the PyTorch FP32 reference was approximately `5.75e-7`, with maximum
+run-to-run drift of `7.43e-7`.
 
 Bitwise identity is not expected because lock acquisition changes the order
 of FP32 additions. Large reference error, large repeated drift, group-size

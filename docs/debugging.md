@@ -28,7 +28,9 @@ The focused workloads in `tests/test_sanitizer_workloads.py` exercise:
 - both matmul accumulation modes on contiguous tensors and the strided
   `129x193 @ 193x257` M/N/K-tail case;
 - LayerNorm row-strided forward and lock-reduced backward;
-- RMSNorm row-strided forward and single-buffer lock-reduced backward.
+- RMSNorm row-strided forward and single-buffer lock-reduced backward;
+- fused residual RMSNorm with independent strides on both inputs and both
+  output-gradient paths.
 
 Run them with:
 
@@ -46,16 +48,32 @@ compute-sanitizer --tool synccheck \
   python -m pytest tests/test_sanitizer_workloads.py -k layer_norm
 
 compute-sanitizer --tool memcheck \
-  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+  python -m pytest tests/test_sanitizer_workloads.py \
+  -k "rms_norm and not residual"
 
 compute-sanitizer --tool initcheck \
-  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+  python -m pytest tests/test_sanitizer_workloads.py \
+  -k "rms_norm and not residual"
 
 compute-sanitizer --tool racecheck \
-  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+  python -m pytest tests/test_sanitizer_workloads.py \
+  -k "rms_norm and not residual"
 
 compute-sanitizer --tool synccheck \
-  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+  python -m pytest tests/test_sanitizer_workloads.py \
+  -k "rms_norm and not residual"
+
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k residual_rms_norm
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k residual_rms_norm
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k residual_rms_norm
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k residual_rms_norm
 ```
 
 The RTX 4060 run completed with:
@@ -70,11 +88,17 @@ The RTX 4060 run completed with:
 | initcheck | RMSNorm | 0 errors |
 | racecheck | RMSNorm | 0 errors, 0 warnings |
 | synccheck | RMSNorm | 0 errors |
+| memcheck | residual RMSNorm | 0 errors |
+| initcheck | residual RMSNorm | 0 errors |
+| racecheck | residual RMSNorm | 0 errors, 0 warnings |
+| synccheck | residual RMSNorm | 0 errors |
 
 The raw summaries are committed under
 `results/nvidia_geforce_rtx_4060/compute_sanitizer_*.log`.
 RMSNorm-specific summaries use the
 `compute_sanitizer_rms_norm_*.log` prefix.
+Residual RMSNorm summaries use
+`compute_sanitizer_residual_rms_norm_*.log`.
 
 ### Coverage limits
 
@@ -151,8 +175,8 @@ all active count slots equal one, and all inactive count slots remain zero.
 It then validates `dweight` against a PyTorch FP32 reference and measures
 run-to-run and group-size drift.
 
-All 200 launches passed. The one-lock case reached approximately `6.00e-7`
-relative reference error and `7.39e-7` maximum repeated drift. Complete
+All 200 launches passed. The one-lock case reached approximately `5.75e-7`
+relative reference error and `7.43e-7` maximum repeated drift. Complete
 results and thresholds are stored in `rms_norm_lock_stress.json`.
 
 ## Triton interpreter limitation

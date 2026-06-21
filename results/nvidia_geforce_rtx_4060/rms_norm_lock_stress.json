@@ -20,8 +20,8 @@
       "inactive_counts_zero": true,
       "bitwise_identical": false,
       "unique_output_hashes": 50,
-      "max_repeat_relative_drift_dweight": 7.38862411253649e-07,
-      "dweight_relative_frobenius": 6.000272492201475e-07
+      "max_repeat_relative_drift_dweight": 7.433362725350889e-07,
+      "dweight_relative_frobenius": 5.749606657445838e-07
     },
     {
       "group_size": 8,
@@ -32,8 +32,8 @@
       "inactive_counts_zero": true,
       "bitwise_identical": false,
       "unique_output_hashes": 50,
-      "max_repeat_relative_drift_dweight": 2.8259555051590723e-07,
-      "dweight_relative_frobenius": 2.4574558210588293e-07
+      "max_repeat_relative_drift_dweight": 2.765278850347386e-07,
+      "dweight_relative_frobenius": 2.410887702808395e-07
     },
     {
       "group_size": 256,
@@ -64,17 +64,17 @@
     {
       "reference_group_size": 1,
       "group_size": 8,
-      "dweight_relative_frobenius": 6.220952855073847e-07
+      "dweight_relative_frobenius": 5.902889483877516e-07
     },
     {
       "reference_group_size": 1,
       "group_size": 256,
-      "dweight_relative_frobenius": 5.916615464229835e-07
+      "dweight_relative_frobenius": 5.798065672024677e-07
     },
     {
       "reference_group_size": 1,
       "group_size": 2048,
-      "dweight_relative_frobenius": 6.011638333802694e-07
+      "dweight_relative_frobenius": 5.839787036165944e-07
     }
   ],
   "interpretation": {

@@ -9,6 +9,8 @@ from tklab.kernels.flash_attention import attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
+from tklab.kernels.residual_rms_norm import residual_rms_norm
+from tklab.kernels.rms_norm import rms_norm
 from tklab.kernels.vector_add import vector_add
 
 
@@ -59,6 +61,25 @@ def test_layer_norm_requires_cuda() -> None:
             torch.zeros(2, 8),
             torch.ones(8),
             torch.zeros(8),
+        )
+
+
+def test_rms_norm_rejects_mismatched_weight() -> None:
+    """Reject a weight vector that does not match the feature dimension."""
+    with pytest.raises(ValueError, match="match the final input dimension"):
+        rms_norm(
+            torch.zeros(2, 8),
+            torch.ones(7),
+        )
+
+
+def test_residual_rms_norm_rejects_shape_mismatch() -> None:
+    """Reject residual metadata before attempting a CUDA launch."""
+    with pytest.raises(ValueError, match="residual must match"):
+        residual_rms_norm(
+            torch.zeros(2, 8),
+            torch.zeros(3, 8),
+            torch.ones(8),
         )
 
 
