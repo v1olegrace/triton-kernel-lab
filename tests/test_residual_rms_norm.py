@@ -7,12 +7,12 @@ import torch
 import torch.nn.functional as F
 
 from tklab.harness.tolerances import assert_relative_frobenius
+from tklab.kernels._norm_common import EPS as _EPS
 from tklab.kernels.residual_rms_norm import (
     _launch_forward,
     residual_rms_norm,
 )
 from tklab.kernels.rms_norm import (
-    _EPS,
     _launch_backward_stage1,
     _launch_backward_stage2,
     _make_backward_buffers,

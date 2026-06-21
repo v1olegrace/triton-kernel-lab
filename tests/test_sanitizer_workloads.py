@@ -7,6 +7,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
+from tklab.kernels.activations import gelu, relu, silu, tanh
 from tklab.kernels.flash_attention import attention_causal, attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
@@ -151,6 +152,21 @@ def test_sanitizer_rope_forward_backward_strided_tail() -> None:
     torch.cuda.synchronize()
 
 
+@pytest.mark.parametrize("kernel", [relu, gelu, silu, tanh])
+def test_sanitizer_activations_forward_backward_strided_tail(
+    kernel: Callable[[torch.Tensor], torch.Tensor],
+) -> None:
+    """Exercise every activation on independent row strides and a masked tail."""
+    rows, columns = 37, 1000
+    x_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
+    dy_storage = torch.randn(rows * 3, columns, device="cuda", dtype=torch.float32)
+    x = x_storage[::2].detach().requires_grad_(True)
+    dy = dy_storage[::3]
+    output = kernel(x)
+    torch.autograd.grad(output, x, grad_outputs=dy)
+    torch.cuda.synchronize()
+
+
 @pytest.mark.parametrize("kernel", [attention_noncausal, attention_causal])
 def test_sanitizer_flash_attention_partial_tiles(
     kernel: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
@@ -163,4 +179,21 @@ def test_sanitizer_flash_attention_partial_tiles(
     output = kernel(q, k, v)
     if not torch.isfinite(output).all():
         raise AssertionError("attention sanitizer workload produced non-finite output")
+    torch.cuda.synchronize()
+
+
+@pytest.mark.parametrize("kernel", [attention_noncausal, attention_causal])
+def test_sanitizer_flash_attention_backward_partial_tiles(
+    kernel: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor],
+) -> None:
+    """Exercise dQ/dK/dV masking on a partial query and key/value block."""
+    shape = (1, 16, 129, 64)
+    q = torch.randn(shape, device="cuda", dtype=torch.float16, requires_grad=True)
+    k = torch.randn(shape, device="cuda", dtype=torch.float16, requires_grad=True)
+    v = torch.randn(shape, device="cuda", dtype=torch.float16, requires_grad=True)
+    do = torch.randn(shape, device="cuda", dtype=torch.float16)
+    output = kernel(q, k, v)
+    gradients = torch.autograd.grad(output, (q, k, v), grad_outputs=do)
+    if not all(torch.isfinite(gradient).all() for gradient in gradients):
+        raise AssertionError("attention backward sanitizer workload produced non-finite gradients")
     torch.cuda.synchronize()

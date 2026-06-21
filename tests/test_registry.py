@@ -63,11 +63,15 @@ def test_registry_contains_expected_kernels() -> None:
         "attention_noncausal",
         "vector_add",
         "fused_softmax",
+        "gelu_forward",
         "layer_norm_forward",
+        "relu_forward",
         "residual_rms_norm_forward",
         "rms_norm_forward",
         "rope_forward",
+        "silu_forward",
         "swiglu_forward",
+        "tanh_forward",
         "matmul_fp32acc",
         "matmul_fp16acc",
     }
@@ -80,8 +84,20 @@ def test_registry_contains_expected_kernels() -> None:
         ({"description": " "}, "description"),
         ({"sizes": ()}, "sizes"),
         ({"sizes": (1, 1)}, "duplicates"),
+        ({"sizes": (True, 2)}, "positive integers"),
+        ({"dtypes": (torch.float16, torch.float16)}, "dtypes"),
         ({"bytes_moved": None}, "bytes_moved"),
         ({"compute_mode": "fp16_fp32acc"}, "compute metadata"),
+        ({"bound": "other", "bytes_moved": None}, "unsupported bound"),
+        (
+            {
+                "bound": "compute",
+                "bytes_moved": None,
+                "flops": lambda size, dtype: size,
+                "compute_mode": "other",
+            },
+            "unsupported compute mode",
+        ),
     ],
 )
 def test_invalid_memory_specs_are_rejected(
@@ -97,3 +113,10 @@ def test_validation_sizes_default_to_benchmark_sizes() -> None:
     """Use benchmark sizes when no reduced correctness set is supplied."""
     spec = _memory_spec()
     assert tuple(spec.validation_sizes()) == (1, 2)
+
+
+def test_spec_normalizes_mutable_sequences_to_tuples() -> None:
+    """Keep a frozen specification immutable even when callers pass lists."""
+    spec = _memory_spec(sizes=[1, 2], dtypes=[torch.float16])
+    assert spec.sizes == (1, 2)
+    assert spec.dtypes == (torch.float16,)

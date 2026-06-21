@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.18
+    rev: 77039ccbba72c8aede339c5f8ae29b42aced0a2e # v0.15.18
     hooks:
       - id: ruff-check
         args: [--fix]
@@ -9,6 +9,6 @@ repos:
     hooks:
       - id: mypy
         name: mypy (strict)
-        entry: uv run mypy src tests benchmarks
+        entry: uv run --frozen mypy src tests benchmarks
         language: system
         pass_filenames: false

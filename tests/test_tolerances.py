@@ -37,3 +37,15 @@ def test_relative_frobenius_rejects_large_error() -> None:
             torch.zeros(4),
             max_relative_error=0.5,
         )
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), -float("inf")])
+def test_relative_frobenius_rejects_non_finite_reference(non_finite: float) -> None:
+    """Never let an invalid reference turn the aggregate comparison into a pass."""
+    reference = torch.tensor([non_finite], dtype=torch.float32)
+    with pytest.raises(AssertionError, match="reference contains non-finite"):
+        assert_relative_frobenius(
+            torch.zeros_like(reference),
+            reference,
+            max_relative_error=1e-3,
+        )

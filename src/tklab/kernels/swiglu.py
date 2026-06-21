@@ -9,7 +9,10 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
+from tklab.harness.addressing import assert_int32_addressable
+from tklab.kernels._elementwise_math import stable_sigmoid
 from tklab.registry import (
     BenchmarkCall,
     BenchmarkScalar,
@@ -20,19 +23,6 @@ from tklab.registry import (
 
 _ROWS = 4096
 _BLOCK_SIZE = 256
-_MAX_INT32_OFFSET = 2**31 - 1
-
-
-@triton.jit  # type: ignore[untyped-decorator]
-def _stable_sigmoid(values: tl.tensor) -> tl.tensor:
-    """Return sigmoid without overflowing either exponential branch."""
-    exp_negative_abs = tl.exp(-tl.abs(values))
-    denominator = 1.0 + exp_negative_abs
-    return tl.where(
-        values >= 0.0,
-        1.0 / denominator,
-        exp_negative_abs / denominator,
-    )
 
 
 @triton.jit  # type: ignore[untyped-decorator]
@@ -61,7 +51,7 @@ def _swiglu_forward_kernel(
         mask=mask,
         other=0.0,
     ).to(tl.float32)
-    sigmoid = _stable_sigmoid(gate)
+    sigmoid = stable_sigmoid(gate)
     tl.store(
         output_ptr + row * output_row_stride + columns,
         value * gate * sigmoid,
@@ -104,7 +94,7 @@ def _swiglu_backward_kernel(
         mask=mask,
         other=0.0,
     ).to(tl.float32)
-    sigmoid = _stable_sigmoid(gate)
+    sigmoid = stable_sigmoid(gate)
     silu = gate * sigmoid
     silu_derivative = sigmoid * (1.0 + gate * (1.0 - sigmoid))
     tl.store(
@@ -139,9 +129,7 @@ def _validate_inputs(value: torch.Tensor, gate: torch.Tensor) -> None:
     if value.stride(1) != 1 or gate.stride(1) != 1:
         raise ValueError("swiglu requires contiguous final dimensions")
     for name, tensor in (("value", value), ("gate", gate)):
-        max_relative_offset = (rows - 1) * tensor.stride(0) + columns - 1
-        if max_relative_offset > _MAX_INT32_OFFSET:
-            raise ValueError(f"{name} strides exceed signed int32 offsets")
+        assert_int32_addressable(tensor, name=name)
 
 
 def _validate_output(output: torch.Tensor, reference: torch.Tensor, *, name: str) -> None:
@@ -154,6 +142,7 @@ def _validate_output(output: torch.Tensor, reference: torch.Tensor, *, name: str
         raise ValueError(f"{name} metadata must match the input")
     if output.stride(1) != 1:
         raise ValueError(f"{name} requires a contiguous final dimension")
+    assert_int32_addressable(output, name=name)
 
 
 def _launch_forward(
@@ -189,10 +178,8 @@ def _launch_backward(
         raise ValueError("upstream gradient metadata must match the inputs")
     if dy.stride(1) != 1:
         dy = dy.contiguous()
+    assert_int32_addressable(dy, name="upstream gradient")
     rows, columns = value.shape
-    max_relative_offset = (rows - 1) * dy.stride(0) + columns - 1
-    if max_relative_offset > _MAX_INT32_OFFSET:
-        raise ValueError("upstream gradient strides exceed signed int32 offsets")
     dvalue = torch.empty(value.shape, dtype=value.dtype, device=value.device)
     dgate = torch.empty_like(dvalue)
     _swiglu_backward_kernel[(rows, triton.cdiv(columns, _BLOCK_SIZE))](
@@ -223,12 +210,14 @@ class _SwiGLUFunction(torch.autograd.Function):
         gate: torch.Tensor,
     ) -> torch.Tensor:
         """Run forward and save both inputs for deterministic backward."""
+        _validate_inputs(value, gate)
         output = torch.empty(value.shape, dtype=value.dtype, device=value.device)
         _launch_forward(value, gate, output)
         ctx.save_for_backward(value, gate)
         return output
 
     @staticmethod
+    @once_differentiable
     def backward(
         ctx: Any,
         dy: torch.Tensor,

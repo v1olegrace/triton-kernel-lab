@@ -22,11 +22,23 @@ def test_vector_add_rejects_shape_mismatch() -> None:
         vector_add(torch.zeros(2), torch.zeros(3))
 
 
+def test_vector_add_requires_cuda_outside_interpreter() -> None:
+    """Reject an ordinary CPU call with a stable public error."""
+    with pytest.raises(ValueError, match="requires CUDA"):
+        vector_add(torch.zeros(2), torch.zeros(2))
+
+
 def test_softmax_rejects_non_contiguous_final_dimension() -> None:
     """Reject column-strided layouts explicitly."""
     x = torch.zeros(4, 8)[:, ::2]
     with pytest.raises(ValueError, match="contiguous final dimension"):
         softmax(x)
+
+
+def test_softmax_requires_cuda_outside_interpreter() -> None:
+    """Reject an ordinary CPU call before reaching Triton."""
+    with pytest.raises(ValueError, match="requires CUDA"):
+        softmax(torch.zeros(2, 8))
 
 
 def test_matmul_rejects_incompatible_inner_dimensions() -> None:
@@ -36,6 +48,23 @@ def test_matmul_rejects_incompatible_inner_dimensions() -> None:
             torch.zeros(2, 3, dtype=torch.float16),
             torch.zeros(4, 2, dtype=torch.float16),
         )
+
+
+def test_matmul_requires_cuda() -> None:
+    """Reject valid CPU matrices before attempting a GPU-only launch."""
+    with pytest.raises(ValueError, match="requires CUDA"):
+        matmul_fp32acc(
+            torch.zeros(2, 3, dtype=torch.float16),
+            torch.zeros(3, 2, dtype=torch.float16),
+        )
+
+
+def test_matmul_rejects_zero_strides() -> None:
+    """Keep runtime strides consistent with the kernel's positive assumptions."""
+    left = torch.empty_strided((2, 3), (0, 1), dtype=torch.float16, device="meta")
+    right = torch.empty((3, 2), dtype=torch.float16, device="meta")
+    with pytest.raises(ValueError, match="strictly positive strides"):
+        matmul_fp32acc(left, right)
 
 
 def test_layer_norm_rejects_mismatched_parameters() -> None:
@@ -66,6 +95,18 @@ def test_layer_norm_requires_cuda() -> None:
         )
 
 
+@pytest.mark.parametrize("eps", [0.0, -1e-5, float("nan"), float("inf")])
+def test_layer_norm_rejects_invalid_epsilon(eps: float) -> None:
+    """Reject singular and non-finite stabilization constants."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        layer_norm(
+            torch.zeros(2, 8),
+            torch.ones(8),
+            torch.zeros(8),
+            eps=eps,
+        )
+
+
 def test_rms_norm_rejects_mismatched_weight() -> None:
     """Reject a weight vector that does not match the feature dimension."""
     with pytest.raises(ValueError, match="match the final input dimension"):
@@ -75,6 +116,12 @@ def test_rms_norm_rejects_mismatched_weight() -> None:
         )
 
 
+def test_rms_norm_rejects_invalid_epsilon() -> None:
+    """Apply the same epsilon invariant to RMSNorm."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        rms_norm(torch.zeros(2, 8), torch.ones(8), eps=0.0)
+
+
 def test_residual_rms_norm_rejects_shape_mismatch() -> None:
     """Reject residual metadata before attempting a CUDA launch."""
     with pytest.raises(ValueError, match="residual must match"):
@@ -82,6 +129,17 @@ def test_residual_rms_norm_rejects_shape_mismatch() -> None:
             torch.zeros(2, 8),
             torch.zeros(3, 8),
             torch.ones(8),
+        )
+
+
+def test_residual_rms_norm_rejects_invalid_epsilon() -> None:
+    """Apply the same epsilon invariant to fused residual RMSNorm."""
+    with pytest.raises(ValueError, match="finite and positive"):
+        residual_rms_norm(
+            torch.zeros(2, 8),
+            torch.zeros(2, 8),
+            torch.ones(8),
+            eps=float("nan"),
         )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from functools import partial
 from typing import Any, cast
 
@@ -10,14 +9,11 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
-from tklab.kernels.rms_norm import (
-    _EPS,
-    _MAX_INT32_OFFSET,
-    _block_size_and_warps,
-    _launch_backward,
-    _validate,
-)
+from tklab.harness.addressing import assert_int32_addressable
+from tklab.kernels._norm_common import EPS, block_size_and_warps, validate_epsilon
+from tklab.kernels.rms_norm import _launch_backward, _validate
 from tklab.registry import (
     BenchmarkCall,
     BenchmarkScalar,
@@ -103,10 +99,7 @@ def _validate_inputs(
     if residual.stride(1) != 1:
         raise ValueError("residual requires a contiguous final dimension")
     _validate(x, weight)
-    rows, columns = residual.shape
-    max_relative_offset = (rows - 1) * residual.stride(0) + columns - 1
-    if max_relative_offset > _MAX_INT32_OFFSET:
-        raise ValueError("residual strides exceed the kernel's signed int32 offset range")
+    assert_int32_addressable(residual, name="residual")
 
 
 def _validate_output(
@@ -124,6 +117,7 @@ def _validate_output(
         raise ValueError(f"{name} metadata must match the input")
     if output.stride(1) != 1:
         raise ValueError(f"{name} requires a contiguous final dimension")
+    assert_int32_addressable(output, name=name)
 
 
 def _launch_forward(
@@ -140,8 +134,7 @@ def _launch_forward(
 ) -> None:
     """Launch fused residual addition and RMSNorm into supplied buffers."""
     _validate_inputs(x, residual, weight)
-    if not math.isfinite(eps) or eps <= 0:
-        raise ValueError("eps must be positive")
+    validate_epsilon(eps)
     _validate_output(output, x, name="output")
     if store_residual:
         _validate_output(residual_sum, x, name="residual_sum")
@@ -152,7 +145,7 @@ def _launch_forward(
         if rstd.dtype != torch.float32:
             raise ValueError("rstd must use float32")
 
-    block_size, num_warps = _block_size_and_warps(columns, x.element_size())
+    block_size, num_warps = block_size_and_warps(columns, x.element_size())
     _residual_rms_norm_forward_kernel[(rows,)](
         x,
         residual,
@@ -206,6 +199,7 @@ class _ResidualRMSNormFunction(torch.autograd.Function):
         return residual_sum, output
 
     @staticmethod
+    @once_differentiable
     def backward(
         ctx: Any,
         incoming_residual_sum: torch.Tensor | None,
@@ -235,7 +229,7 @@ def residual_rms_norm(
     x: torch.Tensor,
     residual: torch.Tensor,
     weight: torch.Tensor,
-    eps: float = _EPS,
+    eps: float = EPS,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return ``(x + residual, RMSNorm(x + residual))``.
 
@@ -243,6 +237,26 @@ def residual_rms_norm(
     the same residual sum. Backward reuses RMSNorm's audited lock reduction
     and adds the direct residual-sum gradient inside stage 1.
     """
+    validate_epsilon(eps)
+    _validate_inputs(x, residual, weight)
+    needs_grad = torch.is_grad_enabled() and any(
+        tensor.requires_grad for tensor in (x, residual, weight)
+    )
+    if not needs_grad:
+        residual_sum = torch.empty(x.shape, dtype=x.dtype, device=x.device)
+        output = torch.empty_like(residual_sum)
+        _launch_forward(
+            x,
+            residual,
+            weight,
+            residual_sum,
+            output,
+            output,
+            eps=eps,
+            store_residual=True,
+            store_stats=False,
+        )
+        return residual_sum, output
     result = _ResidualRMSNormFunction.apply(  # type: ignore[no-untyped-call]
         x,
         residual,
@@ -269,7 +283,7 @@ def _torch_residual_rms_norm(
 ) -> torch.Tensor:
     """Return the native composed reference's normalized output."""
     residual_sum = x + residual
-    return F.rms_norm(residual_sum, (x.shape[-1],), weight, _EPS)
+    return F.rms_norm(residual_sum, (x.shape[-1],), weight, EPS)
 
 
 def _make_inputs(
@@ -316,7 +330,7 @@ def _launch(args: TensorArgs, output: torch.Tensor) -> None:
         output,
         output,
         output,
-        eps=_EPS,
+        eps=EPS,
         store_residual=False,
         store_stats=False,
     )
@@ -335,7 +349,7 @@ def _make_benchmark_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCal
         residual_sum,
         output,
         rstd,
-        eps=_EPS,
+        eps=EPS,
         store_residual=True,
         store_stats=True,
     )
@@ -352,7 +366,7 @@ def _make_reference_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCal
             residual_sum,
             (x.shape[-1],),
             weight,
-            _EPS,
+            EPS,
         )
 
     return launch
@@ -371,7 +385,7 @@ def _make_naive_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCall:
             dim=-1,
             keepdim=True,
         )
-        normalized = residual_sum_float * torch.rsqrt(mean_square + _EPS)
+        normalized = residual_sum_float * torch.rsqrt(mean_square + EPS)
         output = (normalized * weight.float()).to(x.dtype)
         return residual_sum, output
 

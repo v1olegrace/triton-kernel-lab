@@ -18,8 +18,8 @@ import triton
 
 from tklab.harness.jsonio import JsonObject, write_json_atomic
 from tklab.harness.roofline import gpu_slug, gpu_utilization_pct
+from tklab.kernels._norm_common import EPS as _EPS
 from tklab.kernels.layer_norm import (
-    _EPS,
     _launch_backward_stage1,
     _launch_backward_stage2,
     _launch_forward,

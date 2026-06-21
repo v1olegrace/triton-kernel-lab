@@ -101,6 +101,13 @@ class KernelSpec:
 
     def __post_init__(self) -> None:
         """Validate specification invariants after construction."""
+        object.__setattr__(self, "sizes", tuple(self.sizes))
+        object.__setattr__(
+            self,
+            "correctness_sizes",
+            None if self.correctness_sizes is None else tuple(self.correctness_sizes),
+        )
+        object.__setattr__(self, "dtypes", tuple(self.dtypes))
         if not self.name or not self.name.isidentifier():
             raise ValueError("kernel name must be a non-empty Python identifier")
         if not self.description.strip():
@@ -110,6 +117,10 @@ class KernelSpec:
             self._validate_sizes(self.correctness_sizes, field_name="correctness_sizes")
         if not self.dtypes:
             raise ValueError(f"{self.name}: at least one dtype is required")
+        if any(not isinstance(dtype, torch.dtype) for dtype in self.dtypes):
+            raise ValueError(f"{self.name}: dtypes must contain torch.dtype values")
+        if len(set(self.dtypes)) != len(self.dtypes):
+            raise ValueError(f"{self.name}: dtypes must not contain duplicates")
         if self.bound == "memory":
             if self.bytes_moved is None:
                 raise ValueError(f"{self.name}: memory-bound kernels require bytes_moved")
@@ -117,8 +128,19 @@ class KernelSpec:
                 raise ValueError(
                     f"{self.name}: memory-bound kernels cannot define compute metadata"
                 )
-        elif self.flops is None or self.compute_mode is None:
-            raise ValueError(f"{self.name}: compute-bound kernels require flops and compute_mode")
+        elif self.bound == "compute":
+            if self.flops is None or self.compute_mode is None:
+                raise ValueError(
+                    f"{self.name}: compute-bound kernels require flops and compute_mode"
+                )
+            if self.compute_mode not in {
+                "fp16_fp32acc",
+                "fp16_fp16acc",
+                "attention_fp16_fp32acc",
+            }:
+                raise ValueError(f"{self.name}: unsupported compute mode {self.compute_mode!r}")
+        else:
+            raise ValueError(f"{self.name}: unsupported bound {self.bound!r}")
 
     def validation_sizes(self) -> Sequence[int]:
         """Return the sizes used by correctness tests."""
@@ -135,7 +157,9 @@ class KernelSpec:
         Raises:
             ValueError: If the sequence is empty, non-positive, or duplicated.
         """
-        if not sizes or any(size <= 0 for size in sizes):
+        if not sizes or any(
+            not isinstance(size, int) or isinstance(size, bool) or size <= 0 for size in sizes
+        ):
             raise ValueError(f"{field_name} must contain positive integers")
         if len(set(sizes)) != len(sizes):
             raise ValueError(f"{field_name} must not contain duplicates")

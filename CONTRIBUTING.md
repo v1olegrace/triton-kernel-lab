@@ -9,8 +9,9 @@ model, reproducible benchmark metadata, and documented numerical assumptions.
 ```bash
 git clone https://github.com/v1olegrace/triton-kernel-lab.git
 cd triton-kernel-lab
-uv sync --extra dev
-uv run pre-commit install
+uv python install 3.12.13
+uv sync --extra dev --frozen
+uv run --frozen pre-commit install
 ```
 
 Use Linux or WSL2. Native Windows Triton execution is not supported.

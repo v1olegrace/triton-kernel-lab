@@ -13,7 +13,8 @@ The committed Phase 5 evidence was collected on:
 - WSL2 Ubuntu 24.04;
 - PyTorch 2.12.1 with CUDA 13.0;
 - Triton 3.7.1;
-- Compute Sanitizer 2026.2.0;
+- Compute Sanitizer 2026.2.0 for the original Phase 5 runs and 2025.3.1 for
+  the later activation/attention-backward audit;
 - Nsight Compute CLI 2026.2.0.
 
 Tool versions are recorded because sanitizer behavior and profiler metric
@@ -32,7 +33,11 @@ The focused workloads in `tests/test_sanitizer_workloads.py` exercise:
 - fused residual RMSNorm with independent strides on both inputs and both
   output-gradient paths;
 - SwiGLU and RoPE forward/backward with independent row strides and masked
-  tails.
+  tails;
+- ReLU, exact GELU, SiLU, and tanh forward/backward with row strides and
+  masked tails;
+- causal and non-causal Flash Attention forward at `N=1000` and backward
+  `dQ`/`dK`/`dV` at the partial-tile length `N=129`.
 
 Run them with:
 
@@ -88,6 +93,30 @@ compute-sanitizer --tool racecheck \
 
 compute-sanitizer --tool synccheck \
   python -m pytest tests/test_sanitizer_workloads.py -k "swiglu or rope"
+
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k activations
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k activations
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k activations
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k activations
+
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k flash_attention_backward
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k flash_attention_backward
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k flash_attention_backward
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k flash_attention_backward
 ```
 
 The RTX 4060 run completed with:
@@ -110,6 +139,14 @@ The RTX 4060 run completed with:
 | initcheck | SwiGLU + RoPE | 0 errors |
 | racecheck | SwiGLU + RoPE | 0 errors, 0 warnings |
 | synccheck | SwiGLU + RoPE | 0 errors |
+| memcheck | standalone activations | 0 errors |
+| initcheck | standalone activations | 0 errors |
+| racecheck | standalone activations | 0 errors, 0 warnings |
+| synccheck | standalone activations | 0 errors |
+| memcheck | Flash Attention backward | 0 errors |
+| initcheck | Flash Attention backward | 0 errors |
+| racecheck | Flash Attention backward | 0 errors, 0 warnings |
+| synccheck | Flash Attention backward | 0 errors |
 
 The raw summaries are committed under
 `results/nvidia_geforce_rtx_4060/compute_sanitizer_*.log`.
@@ -118,6 +155,9 @@ RMSNorm-specific summaries use the
 Residual RMSNorm summaries use
 `compute_sanitizer_residual_rms_norm_*.log`.
 The elementwise summaries use `compute_sanitizer_elementwise_*.log`.
+Standalone activation summaries use `compute_sanitizer_activations_*.log`.
+Flash Attention backward summaries use
+`compute_sanitizer_attention_backward_*.log`.
 
 ### Coverage limits
 

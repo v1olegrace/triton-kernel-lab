@@ -8,7 +8,9 @@ from typing import Any, cast
 import torch
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
+from tklab.harness.addressing import assert_int32_addressable
 from tklab.registry import (
     BenchmarkCall,
     BenchmarkScalar,
@@ -19,7 +21,6 @@ from tklab.registry import (
 
 _ROWS = 16_384
 _BLOCK_SIZE = 256
-_MAX_INT32_OFFSET = 2**31 - 1
 
 
 @triton.jit  # type: ignore[untyped-decorator]
@@ -186,10 +187,7 @@ def _validate_inputs(
     if x.stride(1) != 1 or cos.stride(1) != 1 or sin.stride(1) != 1:
         raise ValueError("rope requires contiguous final dimensions")
     for name, tensor in (("x", x), ("cos", cos), ("sin", sin)):
-        tensor_columns = tensor.shape[1]
-        max_relative_offset = (rows - 1) * tensor.stride(0) + tensor_columns - 1
-        if max_relative_offset > _MAX_INT32_OFFSET:
-            raise ValueError(f"{name} strides exceed signed int32 offsets")
+        assert_int32_addressable(tensor, name=name)
 
 
 def _validate_output(output: torch.Tensor, x: torch.Tensor, *, name: str) -> None:
@@ -198,6 +196,7 @@ def _validate_output(output: torch.Tensor, x: torch.Tensor, *, name: str) -> Non
         raise ValueError(f"{name} metadata must match x")
     if output.stride(1) != 1:
         raise ValueError(f"{name} requires a contiguous final dimension")
+    assert_int32_addressable(output, name=name)
 
 
 def _launch_forward(
@@ -241,10 +240,8 @@ def _launch_backward(
         raise ValueError("upstream gradient metadata must match x")
     if dy.stride(1) != 1:
         dy = dy.contiguous()
+    assert_int32_addressable(dy, name="upstream gradient")
     rows, columns = x.shape
-    max_relative_offset = (rows - 1) * dy.stride(0) + columns - 1
-    if max_relative_offset > _MAX_INT32_OFFSET:
-        raise ValueError("upstream gradient strides exceed signed int32 offsets")
     dx = torch.empty(x.shape, dtype=x.dtype, device=x.device)
     dcos = torch.empty(cos.shape, dtype=cos.dtype, device=cos.device) if need_dcos else None
     dsin = torch.empty(sin.shape, dtype=sin.dtype, device=sin.device) if need_dsin else None
@@ -286,12 +283,14 @@ class _RoPEFunction(torch.autograd.Function):
         sin: torch.Tensor,
     ) -> torch.Tensor:
         """Run forward and save inputs for the inverse rotation."""
+        _validate_inputs(x, cos, sin)
         output = torch.empty(x.shape, dtype=x.dtype, device=x.device)
         _launch_forward(x, cos, sin, output)
         ctx.save_for_backward(x, cos, sin)
         return output
 
     @staticmethod
+    @once_differentiable
     def backward(
         ctx: Any,
         dy: torch.Tensor,

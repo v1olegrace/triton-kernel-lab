@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "gpu_name": "NVIDIA GeForce RTX 4060",
   "gpu_slug": "nvidia_geforce_rtx_4060",
   "compute_capability": "8.9",
@@ -189,12 +189,12 @@
   "allow_fp16_reduced_precision_reduction": false,
   "theoretical_provenance": {
     "model": "NVIDIA GeForce RTX 4060",
-    "accumulation": "FP16 inputs, FP32 accumulate, dense",
     "rated_boost_clock_mhz": 2460,
-    "sms": 24,
+    "streaming_multiprocessors": 24,
     "tensor_cores_per_sm": 4,
-    "flops_per_clock_per_tensor_core": 128,
-    "rated_tflops": 30.22848,
+    "fp16_fp32acc_flops_per_clock_per_tensor_core": 128,
+    "fp16_fp32acc_rated_tflops": 30.22848,
+    "fp16_fp16acc_rated_tflops": 60.45696,
     "product_spec_url": "https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/rtx-4060-4060ti/",
     "architecture_whitepaper_url": "https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-ada-gpu-architecture.pdf"
   }

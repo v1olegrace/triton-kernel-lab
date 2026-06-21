@@ -1,8 +1,9 @@
-# Flash Attention forward
+# Flash Attention forward and backward
 
-The Phase 6A kernels implement dense scaled dot-product attention without
-materializing the quadratic score or probability matrices. Two registered
-variants share one Triton kernel:
+The kernels implement dense scaled dot-product attention without
+materializing the quadratic score or probability matrices, with a
+recompute-based backward integrated through `torch.autograd`. Two registered
+variants share one forward Triton kernel:
 
 - `attention_noncausal`;
 - `attention_causal`, using separate unmasked off-band and masked diagonal
@@ -80,10 +81,13 @@ The adversarial case simultaneously exercises:
 - the partial causal diagonal block;
 - absence of NaN or infinity in the output.
 
-The same `N=1000` causal and non-causal workloads pass Compute Sanitizer
+The `N=1000` causal and non-causal forward workloads pass Compute Sanitizer
 `memcheck`, `initcheck`, and `synccheck` with zero errors, plus `racecheck`
-with zero hazards or warnings. Raw summaries are committed as
-`compute_sanitizer_attention_*.log`.
+with zero hazards or warnings. The backward has an independent partial-tile
+workload at `N=129`; both masking modes and all three gradients pass the same
+four tools. Raw summaries are committed as
+`compute_sanitizer_attention_*.log` and
+`compute_sanitizer_attention_backward_*.log`.
 
 ## Memory complexity
 
@@ -195,5 +199,43 @@ official Triton fused-attention tutorial and the FlashAttention papers:
 - <https://arxiv.org/abs/2205.14135>
 - <https://tridao.me/publications/flash2/flash2.pdf>
 
-Backward is intentionally excluded from Phase 6A. It requires recomputation
-of probabilities and separate gradient traversals for `dQ`, `dK`, and `dV`.
+## Backward
+
+`attention_noncausal` and `attention_causal` are differentiable. The forward
+optionally stores the per-query base-2 log-sum-exp `M = row_max + log2(row_sum)`
+(a `STORE_M` compile-time flag, so the inference-only and benchmark launchers
+remain byte-for-byte identical). The public wrapper also selects this
+statistics-free path whenever gradients are disabled or no Q/K/V input
+requires gradients. The backward then recomputes probabilities
+from `Q`, `K`, `V`, `M`, and the saved output rather than retaining the score
+matrix, preserving the `O(N)` activation footprint.
+
+Three kernels run per backward:
+
+1. a preprocessing pass computing `delta_i = sum_d O_id * dO_id`, equal to
+   `sum_j P_ij (dO_i . V_j)`;
+2. a key/value pass that, for each `K`/`V` block, streams every contributing
+   query block and accumulates `dV = P^T dO` and `dK = scale * dS^T Q`;
+3. a query pass that, for each query block, streams the contributing key blocks
+   and accumulates `dQ = scale * dS K`.
+
+Here `P = exp2(scale_log2 * QK^T - M)`, `dP = dO V^T`, and
+`dS = P * (dP - delta)`. The softmax scale multiplies `dQ` and `dK` only, never
+`dV`. The recomputed `P` is masked exactly as the forward masks scores: the
+`key_index < sequence_length` tail for both variants, plus the
+`query_index >= key_index` triangle in the causal case, so padded keys and
+upper-triangle positions contribute zero to every gradient.
+
+Probabilities, `dP`, and the accumulators are FP32; matmul operands are cast to
+FP16 for the Tensor Core path, matching the forward policy.
+The custom backward supports first-order gradients only and is explicitly
+marked non-differentiable for higher-order autograd.
+
+### Backward correctness
+
+`dQ`, `dK`, and `dV` are validated on GPU against `torch.autograd.grad` of
+`scaled_dot_product_attention` for both masking modes at `N=128` and the
+adversarial `N=1000`, under a relative Frobenius bound of `3e-2`. The looser
+bound versus the forward reflects the additional FP16 reductions over the
+sequence in `dK`/`dV`. Larger head dimensions, GQA/MQA, dropout, and attention
+bias remain out of scope, identical to the forward contract.

@@ -76,7 +76,7 @@ vector, and the final reduction has a small fixed number of rows.
 Reproduce the stage study with:
 
 ```bash
-uv run python benchmarks/layer_norm_backward.py
+uv run --frozen python benchmarks/layer_norm_backward.py
 ```
 
 The resulting `layer_norm_backward.json` records all three gradient errors,

@@ -1,0 +1,20 @@
+# Keep the build context small and deterministic. Source, pyproject, uv.lock,
+# tests, and the package are copied; everything below is rebuilt or irrelevant.
+.git
+.github
+.agents
+.claude
+.codex
+.venv
+.venvs
+**/__pycache__/
+**/*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage.xml
+dist
+results
+*.egg-info
+AUDITORIA.md

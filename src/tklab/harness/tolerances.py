@@ -71,10 +71,14 @@ def assert_relative_frobenius(
     reference_float = reference.float()
     if not torch.isfinite(output_float).all():
         raise AssertionError("output contains non-finite values")
+    if not torch.isfinite(reference_float).all():
+        raise AssertionError("reference contains non-finite values")
 
     error_norm = torch.linalg.vector_norm(output_float - reference_float)
     reference_norm = torch.linalg.vector_norm(reference_float)
     relative_error = error_norm if reference_norm.item() == 0.0 else error_norm / reference_norm
+    if not torch.isfinite(relative_error):
+        raise AssertionError("relative Frobenius error is non-finite")
     if relative_error.item() >= max_relative_error:
         raise AssertionError(
             f"relative Frobenius error {relative_error.item():.6g} exceeds {max_relative_error:.6g}"

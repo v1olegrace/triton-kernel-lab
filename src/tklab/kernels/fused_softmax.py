@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 import triton
 import triton.language as tl
 
+from tklab.harness.addressing import assert_int32_addressable
 from tklab.registry import KernelSpec, TensorArgs, register
 
 _ROWS = 4096
@@ -56,6 +59,7 @@ def softmax(x: torch.Tensor) -> torch.Tensor:
         ValueError: If the input shape, dtype, layout, or row width is
             unsupported.
     """
+    _validate(x)
     output = _make_output((x,))
     _launch((x,), output)
     return output
@@ -77,6 +81,10 @@ def _validate(x: torch.Tensor) -> None:
         raise ValueError("softmax requires a contiguous final dimension")
     if x.dtype not in (torch.float16, torch.float32):
         raise ValueError("softmax supports float16 and float32 tensors")
+    interpreter_enabled = os.environ.get("TRITON_INTERPRET") == "1"
+    if x.device.type != "cuda" and not (interpreter_enabled and x.device.type == "cpu"):
+        raise ValueError("softmax requires CUDA unless TRITON_INTERPRET=1")
+    assert_int32_addressable(x, name="input")
 
 
 def _num_warps_for(block_size: int) -> int:
@@ -99,6 +107,9 @@ def _launch(args: TensorArgs, output: torch.Tensor) -> None:
     _validate(x)
     if output.shape != x.shape or output.device != x.device or output.dtype != x.dtype:
         raise ValueError("output metadata must match the input")
+    if output.stride(1) != 1:
+        raise ValueError("softmax output requires a contiguous final dimension")
+    assert_int32_addressable(output, name="output")
 
     rows, columns = x.shape
     block_size = triton.next_power_of_2(columns)

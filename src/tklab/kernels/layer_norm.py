@@ -8,7 +8,6 @@ kernel reduces those buffers across lock groups.
 
 from __future__ import annotations
 
-import math
 import warnings
 from dataclasses import dataclass
 from functools import partial
@@ -18,15 +17,21 @@ import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
+from tklab.harness.addressing import assert_int32_addressable
+from tklab.kernels._norm_common import (
+    EPS,
+    MAX_FEATURE_BYTES,
+    STAGE2_BLOCK_M,
+    STAGE2_BLOCK_N,
+    block_size_and_warps,
+    group_size_m,
+    validate_epsilon,
+)
 from tklab.registry import BenchmarkCall, KernelSpec, TensorArgs, register
 
 _ROWS = 4096
-_EPS = 1e-5
-_MAX_FEATURE_BYTES = 65_536
-_STAGE2_BLOCK_M = 32
-_STAGE2_BLOCK_N = 128
-_MAX_INT32_OFFSET = 2**31 - 1
 
 
 @triton.jit  # type: ignore[untyped-decorator]
@@ -192,35 +197,12 @@ def _validate(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor) -> None
         raise ValueError("input, weight, and bias must have the same dtype")
     if x.dtype not in (torch.float16, torch.float32):
         raise ValueError("layer_norm supports float16 and float32 tensors")
-    if columns * x.element_size() > _MAX_FEATURE_BYTES:
+    if columns * x.element_size() > MAX_FEATURE_BYTES:
         raise ValueError(
             f"feature row uses {columns * x.element_size()} bytes; "
-            f"the fused limit is {_MAX_FEATURE_BYTES}"
+            f"the fused limit is {MAX_FEATURE_BYTES}"
         )
-    max_relative_offset = (rows - 1) * x.stride(0) + columns - 1
-    if max_relative_offset > _MAX_INT32_OFFSET:
-        raise ValueError("input strides exceed the kernel's signed int32 offset range")
-
-
-def _block_size_and_warps(columns: int, element_size: int) -> tuple[int, int]:
-    """Return a power-of-two row block and its warp count."""
-    max_elements = _MAX_FEATURE_BYTES // element_size
-    block_size = min(max_elements, triton.next_power_of_2(columns))
-    if columns > block_size:
-        raise ValueError("feature dimension exceeds the fused LayerNorm limit")
-    num_warps = min(max(block_size // 256, 1), 8)
-    return block_size, num_warps
-
-
-def _group_size_m(columns: int) -> int:
-    """Select the number of independent parameter-gradient lock groups."""
-    if columns <= 1024:
-        return 256
-    if columns <= 4096:
-        return 128
-    if columns <= 8192:
-        return 96
-    return 64
+    assert_int32_addressable(x, name="input")
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,12 +234,12 @@ def _launch_forward(
 ) -> None:
     """Launch LayerNorm forward into preallocated output and statistics."""
     _validate(x, weight, bias)
-    if not math.isfinite(eps) or eps <= 0:
-        raise ValueError("eps must be positive")
+    validate_epsilon(eps)
     if output.shape != x.shape or output.device != x.device or output.dtype != x.dtype:
         raise ValueError("output metadata must match the input")
     if output.stride(1) != 1:
         raise ValueError("layer_norm output requires a contiguous final dimension")
+    assert_int32_addressable(output, name="output")
     rows, columns = x.shape
     if store_stats:
         expected = (rows,)
@@ -268,7 +250,7 @@ def _launch_forward(
         if mean.device != x.device or rstd.device != x.device:
             raise ValueError("mean and rstd must be on the input device")
 
-    block_size, num_warps = _block_size_and_warps(columns, x.element_size())
+    block_size, num_warps = block_size_and_warps(columns, x.element_size())
     _layer_norm_forward_kernel[(rows,)](
         x,
         weight,
@@ -294,8 +276,8 @@ def _make_backward_buffers(
 ) -> _BackwardBuffers:
     """Allocate backward outputs and lock-group partial buffers."""
     rows, columns = x.shape
-    block_size, num_warps = _block_size_and_warps(columns, x.element_size())
-    selected_group_size = _group_size_m(columns) if group_size is None else group_size
+    block_size, num_warps = block_size_and_warps(columns, x.element_size())
+    selected_group_size = group_size_m(columns) if group_size is None else group_size
     if selected_group_size <= 0:
         raise ValueError("group_size must be positive")
     group_count = min(selected_group_size, rows)
@@ -356,15 +338,15 @@ def _launch_backward_stage2(
     columns: int,
 ) -> None:
     """Launch final reduction of parameter-gradient partials."""
-    _layer_norm_backward_stage2_kernel[(triton.cdiv(columns, _STAGE2_BLOCK_N),)](
+    _layer_norm_backward_stage2_kernel[(triton.cdiv(columns, STAGE2_BLOCK_N),)](
         buffers.partial_dw,
         buffers.partial_db,
         buffers.dw,
         buffers.db,
         buffers.group_count,
         columns,
-        BLOCK_M=_STAGE2_BLOCK_M,
-        BLOCK_N=_STAGE2_BLOCK_N,
+        BLOCK_M=STAGE2_BLOCK_M,
+        BLOCK_N=STAGE2_BLOCK_N,
         num_warps=4,
     )
 
@@ -381,6 +363,7 @@ def _launch_backward(
         raise ValueError("upstream gradient metadata must match the input")
     if dy.stride(1) != 1:
         dy = dy.contiguous()
+    assert_int32_addressable(dy, name="upstream gradient")
     if torch.are_deterministic_algorithms_enabled():
         message = (
             "Triton LayerNorm backward uses an order-dependent lock reduction "
@@ -427,6 +410,7 @@ class _LayerNormFunction(torch.autograd.Function):
         return output
 
     @staticmethod
+    @once_differentiable
     def backward(
         ctx: Any,
         dy: torch.Tensor,
@@ -441,7 +425,7 @@ def layer_norm(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: torch.Tensor,
-    eps: float = _EPS,
+    eps: float = EPS,
 ) -> torch.Tensor:
     """Apply LayerNorm over the final dimension with Triton autograd.
 
@@ -449,6 +433,24 @@ def layer_norm(
     supported for numerically strict gradient validation. Backward uses an
     order-dependent reduction and rejects PyTorch's deterministic mode.
     """
+    validate_epsilon(eps)
+    _validate(x, weight, bias)
+    needs_grad = torch.is_grad_enabled() and any(
+        tensor.requires_grad for tensor in (x, weight, bias)
+    )
+    if not needs_grad:
+        output = torch.empty(x.shape, dtype=x.dtype, device=x.device)
+        _launch_forward(
+            x,
+            weight,
+            bias,
+            output,
+            output,
+            output,
+            eps=eps,
+            store_stats=False,
+        )
+        return output
     result = _LayerNormFunction.apply(x, weight, bias, eps)  # type: ignore[no-untyped-call]
     return cast(torch.Tensor, result)
 
@@ -459,7 +461,7 @@ def _torch_layer_norm(
     bias: torch.Tensor,
 ) -> torch.Tensor:
     """Return PyTorch LayerNorm with the lab's default epsilon."""
-    return F.layer_norm(x, (x.shape[-1],), weight, bias, _EPS)
+    return F.layer_norm(x, (x.shape[-1],), weight, bias, EPS)
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:
@@ -478,7 +480,7 @@ def _launch(args: TensorArgs, output: torch.Tensor) -> None:
         output,
         output,
         output,
-        eps=_EPS,
+        eps=EPS,
         store_stats=False,
     )
 
@@ -496,7 +498,7 @@ def _make_benchmark_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCal
         output,
         mean,
         rstd,
-        eps=_EPS,
+        eps=EPS,
         store_stats=True,
     )
 
@@ -514,7 +516,7 @@ def _make_reference_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCal
             [x.shape[-1]],
             weight,
             bias,
-            _EPS,
+            EPS,
             out0=output,
             out1=mean,
             out2=rstd,

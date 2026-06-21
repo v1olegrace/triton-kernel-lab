@@ -8,6 +8,7 @@ import torch
 import triton
 import triton.language as tl
 
+from tklab.harness.addressing import assert_int32_addressable
 from tklab.harness.tolerances import assert_relative_frobenius
 from tklab.registry import (
     BenchmarkMetadataFn,
@@ -17,8 +18,6 @@ from tklab.registry import (
     TensorArgs,
     register,
 )
-
-_MAX_INT32_OFFSET = 2**31 - 1
 
 
 def _configs() -> list[triton.Config]:
@@ -180,12 +179,11 @@ def _validate(a: torch.Tensor, b: torch.Tensor) -> None:
     if a.dtype != torch.float16:
         raise ValueError("matmul currently supports float16 inputs only")
     for name, tensor in (("left", a), ("right", b)):
-        max_relative_offset = sum(
-            (dimension - 1) * stride
-            for dimension, stride in zip(tensor.shape, tensor.stride(), strict=True)
-        )
-        if max_relative_offset > _MAX_INT32_OFFSET:
-            raise ValueError(f"{name} input strides exceed the signed int32 offset range")
+        if any(stride <= 0 for stride in tensor.stride()):
+            raise ValueError(f"{name} input requires strictly positive strides")
+        assert_int32_addressable(tensor, name=name)
+    if a.device.type != "cuda":
+        raise ValueError("matmul requires CUDA tensors")
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:
@@ -242,6 +240,7 @@ _launch_fp16acc = _launch_factory(tl.float16)
 
 def matmul_fp32acc(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Multiply FP16 matrices using FP32 Tensor Core accumulation."""
+    _validate(a, b)
     output = _make_output((a, b))
     _launch_fp32acc((a, b), output)
     return output
@@ -249,6 +248,7 @@ def matmul_fp32acc(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 def matmul_fp16acc(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Multiply FP16 matrices using FP16 Tensor Core accumulation."""
+    _validate(a, b)
     output = _make_output((a, b))
     _launch_fp16acc((a, b), output)
     return output

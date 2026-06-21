@@ -1,0 +1,4 @@
+NVIDIA Compute Sanitizer 2025.3.1.0
+Scope: ReLU, exact GELU, SiLU, and tanh forward/backward strided-tail workloads.
+....                                                                     [100%]
+========= ERROR SUMMARY: 0 errors

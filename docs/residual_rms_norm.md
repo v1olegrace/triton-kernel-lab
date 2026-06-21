@@ -118,7 +118,7 @@ when interpreting small-width speedups.
 Run RMSNorm and residual RMSNorm in one clean GPU session:
 
 ```bash
-uv run tklab-bench \
+uv run --frozen tklab-bench \
   --kernel rms_norm_forward \
   --kernel residual_rms_norm_forward
 ```

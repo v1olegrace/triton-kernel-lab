@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
+
 import torch
 import triton
 import triton.language as tl
 
+from tklab.harness.addressing import assert_int32_addressable
 from tklab.registry import KernelSpec, TensorArgs, register
 
 _BLOCK_SIZE = 1024
@@ -39,11 +42,12 @@ def vector_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         y: Second input vector with matching shape, dtype, and device.
 
     Returns:
-        Tensor with the same shape, dtype, device, and stride as ``x``.
+        Contiguous tensor with the same shape, dtype, and device as ``x``.
 
     Raises:
         ValueError: If inputs are empty, incompatible, or not 1D.
     """
+    _validate_inputs(x, y)
     output = _make_output((x, y))
     _launch((x, y), output)
     return output
@@ -63,12 +67,21 @@ def _validate_inputs(x: torch.Tensor, y: torch.Tensor) -> None:
         raise ValueError(f"dtype mismatch: {x.dtype} != {y.dtype}")
     if x.dtype not in (torch.float16, torch.float32):
         raise ValueError("vector_add supports float16 and float32 tensors")
+    interpreter_enabled = os.environ.get("TRITON_INTERPRET") == "1"
+    if x.device.type != "cuda" and not (interpreter_enabled and x.device.type == "cpu"):
+        raise ValueError("vector_add requires CUDA unless TRITON_INTERPRET=1")
+    assert_int32_addressable(x, name="left input")
+    assert_int32_addressable(y, name="right input")
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:
-    """Allocate an output preserving the first input's one-dimensional stride."""
+    """Allocate a contiguous output.
+
+    Inputs may be expanded with a zero stride. Preserving such a stride for a
+    writable output would alias every logical element and create racing stores.
+    """
     x = args[0]
-    return torch.empty_strided(x.shape, x.stride(), dtype=x.dtype, device=x.device)
+    return torch.empty(x.shape, dtype=x.dtype, device=x.device)
 
 
 def _launch(args: TensorArgs, output: torch.Tensor) -> None:
@@ -77,6 +90,9 @@ def _launch(args: TensorArgs, output: torch.Tensor) -> None:
     _validate_inputs(x, y)
     if output.shape != x.shape or output.device != x.device or output.dtype != x.dtype:
         raise ValueError("output metadata must match the inputs")
+    if not output.is_contiguous():
+        raise ValueError("vector_add output must be contiguous")
+    assert_int32_addressable(output, name="output")
 
     grid = (triton.cdiv(x.numel(), _BLOCK_SIZE),)
     _vector_add_kernel[grid](

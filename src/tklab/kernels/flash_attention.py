@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 import triton
 import triton.language as tl
+from torch.autograd.function import once_differentiable
 
+from tklab.harness.addressing import assert_int32_addressable
 from tklab.harness.tolerances import assert_relative_frobenius
 from tklab.registry import (
     BenchmarkMetadataFn,
@@ -25,7 +27,6 @@ from tklab.registry import (
 _BATCH = 1
 _HEADS = 16
 _HEAD_DIM = 64
-_MAX_INT32_OFFSET = 2**31 - 1
 _LOG2_E = tl.constexpr(1.4426950408889634)
 
 
@@ -126,6 +127,7 @@ def _flash_attention_forward_kernel(
     k_ptr: tl.tensor,
     v_ptr: tl.tensor,
     output_ptr: tl.tensor,
+    m_ptr: tl.tensor,
     stride_qz: int,
     stride_qh: int,
     stride_qn: int,
@@ -147,6 +149,7 @@ def _flash_attention_forward_kernel(
     N_CTX: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     CAUSAL: tl.constexpr,
+    STORE_M: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
 ) -> None:
@@ -248,6 +251,12 @@ def _flash_attention_forward_kernel(
         output,
         mask=query_mask[:, None],
     )
+    if STORE_M:
+        # Log-sum-exp in the base-2 domain the forward pass already works in:
+        # row_max is the scaled per-row maximum, so M = row_max + log2(row_sum)
+        # lets the backward recompute P = exp2(scaled_scores - M) exactly.
+        log_sum_exp = row_max + tl.math.log2(row_sum)
+        tl.store(m_ptr + head_batch * N_CTX + offsets_m, log_sum_exp, mask=query_mask)
 
 
 def _validate(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
@@ -271,12 +280,7 @@ def _validate(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
     for name, tensor in (("Q", q), ("K", k), ("V", v)):
         if not tensor.is_contiguous():
             raise ValueError(f"{name} must be contiguous")
-        max_relative_offset = sum(
-            (dimension - 1) * stride
-            for dimension, stride in zip(tensor.shape, tensor.stride(), strict=True)
-        )
-        if max_relative_offset > _MAX_INT32_OFFSET:
-            raise ValueError(f"{name} strides exceed the signed int32 offset range")
+        assert_int32_addressable(tensor, name=name)
 
 
 def _make_output(args: TensorArgs) -> torch.Tensor:
@@ -284,37 +288,67 @@ def _make_output(args: TensorArgs) -> torch.Tensor:
     return torch.empty_like(args[0])
 
 
+def _launch_forward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    output: torch.Tensor,
+    m: torch.Tensor,
+    *,
+    causal: bool,
+    store_m: bool,
+) -> None:
+    """Launch online-softmax attention into preallocated buffers.
+
+    ``m`` receives the per-query base-2 log-sum-exp when ``store_m`` is set;
+    otherwise it is an unused placeholder and the forward path is byte-for-byte
+    identical to the inference-only launcher.
+    """
+    _validate(q, k, v)
+    if output.shape != q.shape or output.device != q.device or output.dtype != q.dtype:
+        raise ValueError("attention output metadata must match Q")
+    if not output.is_contiguous():
+        raise ValueError("attention output must be contiguous")
+    batch, heads, n_ctx, head_dim = q.shape
+    if store_m:
+        if (
+            m.shape != (batch, heads, n_ctx)
+            or m.device != q.device
+            or m.dtype != torch.float32
+            or not m.is_contiguous()
+        ):
+            raise ValueError("attention log-sum-exp buffer must be contiguous float32 BxHxN")
+        assert_int32_addressable(m, name="log-sum-exp buffer")
+
+    def grid(metadata: dict[str, Any]) -> tuple[int, int]:
+        return triton.cdiv(n_ctx, metadata["BLOCK_M"]), batch * heads
+
+    _flash_attention_forward_kernel[grid](
+        q,
+        k,
+        v,
+        output,
+        m,
+        *q.stride(),
+        *k.stride(),
+        *v.stride(),
+        *output.stride(),
+        heads,
+        1.0 / math.sqrt(head_dim),
+        N_CTX=n_ctx,
+        HEAD_DIM=head_dim,
+        CAUSAL=causal,
+        STORE_M=store_m,
+    )
+
+
 def _launch_factory(*, causal: bool) -> LaunchFn:
-    """Create an allocation-free launcher for one masking mode."""
+    """Create an allocation-free, inference-only launcher for one masking mode."""
 
     def launch(args: TensorArgs, output: torch.Tensor) -> None:
-        """Launch online-softmax attention into a preallocated tensor."""
+        """Launch forward attention without saving backward statistics."""
         q, k, v = args
-        _validate(q, k, v)
-        if output.shape != q.shape or output.device != q.device or output.dtype != q.dtype:
-            raise ValueError("attention output metadata must match Q")
-        if not output.is_contiguous():
-            raise ValueError("attention output must be contiguous")
-        batch, heads, n_ctx, head_dim = q.shape
-
-        def grid(metadata: dict[str, Any]) -> tuple[int, int]:
-            return triton.cdiv(n_ctx, metadata["BLOCK_M"]), batch * heads
-
-        _flash_attention_forward_kernel[grid](
-            q,
-            k,
-            v,
-            output,
-            *q.stride(),
-            *k.stride(),
-            *v.stride(),
-            *output.stride(),
-            heads,
-            1.0 / math.sqrt(head_dim),
-            N_CTX=n_ctx,
-            HEAD_DIM=head_dim,
-            CAUSAL=causal,
-        )
+        _launch_forward(q, k, v, output, output, causal=causal, store_m=False)
 
     return launch
 
@@ -322,19 +356,311 @@ def _launch_factory(*, causal: bool) -> LaunchFn:
 _launch_noncausal = _launch_factory(causal=False)
 _launch_causal = _launch_factory(causal=True)
 
+_BWD_BLOCK_M = 64
+_BWD_BLOCK_N = 64
+
+
+@triton.jit  # type: ignore[untyped-decorator]
+def _attn_bwd_preprocess_kernel(
+    o_ptr: tl.tensor,
+    do_ptr: tl.tensor,
+    delta_ptr: tl.tensor,
+    stride_oz: int,
+    stride_oh: int,
+    stride_on: int,
+    stride_od: int,
+    HEADS: int,
+    N_CTX: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+) -> None:
+    """Compute the per-query row reduction ``delta = sum_d O * dO``."""
+    start_m = tl.program_id(axis=0)
+    head_batch = tl.program_id(axis=1)
+    batch = head_batch // HEADS
+    head = head_batch % HEADS
+    offsets_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offsets_d = tl.arange(0, HEAD_DIM)
+    query_mask = offsets_m < N_CTX
+    base = batch * stride_oz + head * stride_oh
+    addr = base + offsets_m[:, None] * stride_on + offsets_d[None, :] * stride_od
+    o = tl.load(o_ptr + addr, mask=query_mask[:, None], other=0.0).to(tl.float32)
+    do = tl.load(do_ptr + addr, mask=query_mask[:, None], other=0.0).to(tl.float32)
+    delta = tl.sum(o * do, axis=1)
+    tl.store(delta_ptr + head_batch * N_CTX + offsets_m, delta, mask=query_mask)
+
+
+@triton.jit  # type: ignore[untyped-decorator]
+def _attn_bwd_dkdv_kernel(
+    q_ptr: tl.tensor,
+    k_ptr: tl.tensor,
+    v_ptr: tl.tensor,
+    do_ptr: tl.tensor,
+    dk_ptr: tl.tensor,
+    dv_ptr: tl.tensor,
+    m_ptr: tl.tensor,
+    delta_ptr: tl.tensor,
+    stride_z: int,
+    stride_h: int,
+    stride_n: int,
+    stride_d: int,
+    HEADS: int,
+    sm_scale: float,
+    sm_scale_log2: float,
+    N_CTX: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+) -> None:
+    """Accumulate ``dK`` and ``dV`` for one key/value block over all queries."""
+    start_n = tl.program_id(axis=0)
+    head_batch = tl.program_id(axis=1)
+    batch = head_batch // HEADS
+    head = head_batch % HEADS
+    base = batch * stride_z + head * stride_h
+    offsets_n = start_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offsets_d = tl.arange(0, HEAD_DIM)
+    key_mask = offsets_n < N_CTX
+
+    kv_addr = base + offsets_n[:, None] * stride_n + offsets_d[None, :] * stride_d
+    k = tl.load(k_ptr + kv_addr, mask=key_mask[:, None], other=0.0)
+    v = tl.load(v_ptr + kv_addr, mask=key_mask[:, None], other=0.0)
+    dk = tl.zeros((BLOCK_N, HEAD_DIM), dtype=tl.float32)
+    dv = tl.zeros((BLOCK_N, HEAD_DIM), dtype=tl.float32)
+
+    # Causal queries below the diagonal contribute zero, so skip those blocks.
+    low = (start_n * BLOCK_N // BLOCK_M) * BLOCK_M if CAUSAL else 0
+    for start_m in tl.range(low, N_CTX, BLOCK_M):
+        offsets_m = start_m + tl.arange(0, BLOCK_M)
+        query_mask = offsets_m < N_CTX
+        q_addr = base + offsets_m[:, None] * stride_n + offsets_d[None, :] * stride_d
+        q = tl.load(q_ptr + q_addr, mask=query_mask[:, None], other=0.0)
+        do = tl.load(do_ptr + q_addr, mask=query_mask[:, None], other=0.0)
+        m_i = tl.load(m_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+        delta_i = tl.load(delta_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+
+        scores = tl.dot(q, tl.trans(k)) * sm_scale_log2
+        probabilities = tl.math.exp2(scores - m_i[:, None])
+        valid = query_mask[:, None] & key_mask[None, :]
+        if CAUSAL:
+            valid = valid & (offsets_m[:, None] >= offsets_n[None, :])
+        probabilities = tl.where(valid, probabilities, 0.0)
+
+        dv += tl.dot(tl.trans(probabilities).to(tl.float16), do)
+        dp = tl.dot(do, tl.trans(v))
+        ds = probabilities * (dp - delta_i[:, None])
+        dk += tl.dot(tl.trans(ds).to(tl.float16), q)
+
+    dk *= sm_scale
+    tl.store(dk_ptr + kv_addr, dk.to(dk_ptr.dtype.element_ty), mask=key_mask[:, None])
+    tl.store(dv_ptr + kv_addr, dv.to(dv_ptr.dtype.element_ty), mask=key_mask[:, None])
+
+
+@triton.jit  # type: ignore[untyped-decorator]
+def _attn_bwd_dq_kernel(
+    q_ptr: tl.tensor,
+    k_ptr: tl.tensor,
+    v_ptr: tl.tensor,
+    do_ptr: tl.tensor,
+    dq_ptr: tl.tensor,
+    m_ptr: tl.tensor,
+    delta_ptr: tl.tensor,
+    stride_z: int,
+    stride_h: int,
+    stride_n: int,
+    stride_d: int,
+    HEADS: int,
+    sm_scale: float,
+    sm_scale_log2: float,
+    N_CTX: tl.constexpr,
+    HEAD_DIM: tl.constexpr,
+    CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+) -> None:
+    """Accumulate ``dQ`` for one query block over all key/value blocks."""
+    start_m = tl.program_id(axis=0)
+    head_batch = tl.program_id(axis=1)
+    batch = head_batch // HEADS
+    head = head_batch % HEADS
+    base = batch * stride_z + head * stride_h
+    offsets_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offsets_d = tl.arange(0, HEAD_DIM)
+    query_mask = offsets_m < N_CTX
+
+    q_addr = base + offsets_m[:, None] * stride_n + offsets_d[None, :] * stride_d
+    q = tl.load(q_ptr + q_addr, mask=query_mask[:, None], other=0.0)
+    do = tl.load(do_ptr + q_addr, mask=query_mask[:, None], other=0.0)
+    m_i = tl.load(m_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+    delta_i = tl.load(delta_ptr + head_batch * N_CTX + offsets_m, mask=query_mask, other=0.0)
+    dq = tl.zeros((BLOCK_M, HEAD_DIM), dtype=tl.float32)
+
+    # Causal queries attend only keys at or before the block's last query.
+    high = (start_m + 1) * BLOCK_M if CAUSAL else N_CTX
+    for start_n in tl.range(0, high, BLOCK_N):
+        offsets_n = start_n + tl.arange(0, BLOCK_N)
+        key_mask = offsets_n < N_CTX
+        kv_addr = base + offsets_n[:, None] * stride_n + offsets_d[None, :] * stride_d
+        k = tl.load(k_ptr + kv_addr, mask=key_mask[:, None], other=0.0)
+        v = tl.load(v_ptr + kv_addr, mask=key_mask[:, None], other=0.0)
+
+        scores = tl.dot(q, tl.trans(k)) * sm_scale_log2
+        probabilities = tl.math.exp2(scores - m_i[:, None])
+        valid = query_mask[:, None] & key_mask[None, :]
+        if CAUSAL:
+            valid = valid & (offsets_m[:, None] >= offsets_n[None, :])
+        probabilities = tl.where(valid, probabilities, 0.0)
+
+        dp = tl.dot(do, tl.trans(v))
+        ds = probabilities * (dp - delta_i[:, None])
+        dq += tl.dot(ds.to(tl.float16), k)
+
+    dq *= sm_scale
+    tl.store(dq_ptr + q_addr, dq.to(dq_ptr.dtype.element_ty), mask=query_mask[:, None])
+
+
+def _launch_backward(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    output: torch.Tensor,
+    m: torch.Tensor,
+    do: torch.Tensor,
+    *,
+    causal: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Launch the recompute-based attention backward and return dQ, dK, dV."""
+    if do.shape != q.shape or do.device != q.device or do.dtype != q.dtype:
+        raise ValueError("attention upstream gradient metadata must match Q")
+    do = do.contiguous()
+    batch, heads, n_ctx, head_dim = q.shape
+    delta = torch.empty((batch, heads, n_ctx), dtype=torch.float32, device=q.device)
+    dq = torch.empty_like(q)
+    dk = torch.empty_like(k)
+    dv = torch.empty_like(v)
+    sm_scale = 1.0 / math.sqrt(head_dim)
+    sm_scale_log2 = sm_scale * 1.4426950408889634
+    head_batches = batch * heads
+    strides = q.stride()
+
+    _attn_bwd_preprocess_kernel[(triton.cdiv(n_ctx, _BWD_BLOCK_M), head_batches)](
+        output,
+        do,
+        delta,
+        *strides,
+        heads,
+        N_CTX=n_ctx,
+        HEAD_DIM=head_dim,
+        BLOCK_M=_BWD_BLOCK_M,
+    )
+    _attn_bwd_dkdv_kernel[(triton.cdiv(n_ctx, _BWD_BLOCK_N), head_batches)](
+        q,
+        k,
+        v,
+        do,
+        dk,
+        dv,
+        m,
+        delta,
+        *strides,
+        heads,
+        sm_scale,
+        sm_scale_log2,
+        N_CTX=n_ctx,
+        HEAD_DIM=head_dim,
+        CAUSAL=causal,
+        BLOCK_M=_BWD_BLOCK_M,
+        BLOCK_N=_BWD_BLOCK_N,
+    )
+    _attn_bwd_dq_kernel[(triton.cdiv(n_ctx, _BWD_BLOCK_M), head_batches)](
+        q,
+        k,
+        v,
+        do,
+        dq,
+        m,
+        delta,
+        *strides,
+        heads,
+        sm_scale,
+        sm_scale_log2,
+        N_CTX=n_ctx,
+        HEAD_DIM=head_dim,
+        CAUSAL=causal,
+        BLOCK_M=_BWD_BLOCK_M,
+        BLOCK_N=_BWD_BLOCK_N,
+    )
+    return dq, dk, dv
+
+
+class _FlashAttentionFunction(torch.autograd.Function):
+    """Autograd bridge for Flash Attention forward and backward."""
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        causal: bool,
+    ) -> torch.Tensor:
+        """Run forward and save Q/K/V, the output, and the log-sum-exp."""
+        _validate(q, k, v)
+        output = torch.empty_like(q)
+        batch, heads, n_ctx, _ = q.shape
+        m = torch.empty((batch, heads, n_ctx), dtype=torch.float32, device=q.device)
+        _launch_forward(q, k, v, output, m, causal=causal, store_m=True)
+        ctx.save_for_backward(q, k, v, output, m)
+        ctx.causal = causal
+        return output
+
+    @staticmethod
+    @once_differentiable
+    def backward(
+        ctx: Any,
+        do: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, None]:
+        """Compute Q, K, and V gradients with a recompute-based backward."""
+        q, k, v, output, m = ctx.saved_tensors
+        dq, dk, dv = _launch_backward(q, k, v, output, m, do, causal=ctx.causal)
+        return dq, dk, dv, None
+
+
+def _attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    *,
+    causal: bool,
+) -> torch.Tensor:
+    """Dispatch inference without saved statistics and training through autograd."""
+    _validate(q, k, v)
+    needs_grad = torch.is_grad_enabled() and any(tensor.requires_grad for tensor in (q, k, v))
+    if not needs_grad:
+        output = torch.empty_like(q)
+        _launch_forward(
+            q,
+            k,
+            v,
+            output,
+            output,
+            causal=causal,
+            store_m=False,
+        )
+        return output
+    result = _FlashAttentionFunction.apply(q, k, v, causal)  # type: ignore[no-untyped-call]
+    return cast(torch.Tensor, result)
+
 
 def attention_noncausal(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Compute dense non-causal scaled dot-product attention."""
-    output = _make_output((q, k, v))
-    _launch_noncausal((q, k, v), output)
-    return output
+    """Compute dense non-causal scaled dot-product attention with autograd."""
+    return _attention(q, k, v, causal=False)
 
 
 def attention_causal(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Compute dense causal scaled dot-product attention."""
-    output = _make_output((q, k, v))
-    _launch_causal((q, k, v), output)
-    return output
+    """Compute dense causal scaled dot-product attention with autograd."""
+    return _attention(q, k, v, causal=True)
 
 
 def _reference_factory(*, causal: bool) -> TensorFn:

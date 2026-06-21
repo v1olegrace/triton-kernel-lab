@@ -11,6 +11,8 @@ Each subdirectory is named from `torch.cuda.get_device_name()` and contains:
 - `layer_norm_backward_stages.png`: stage timing and incremental overhead;
 - `compute_sanitizer_*.log`: focused real-GPU sanitizer summaries;
 - `compute_sanitizer_attention_*.log`: Flash Attention tail/causal sanitizer summaries;
+- `compute_sanitizer_attention_backward_*.log`: Flash Attention dQ/dK/dV summaries;
+- `compute_sanitizer_activations_*.log`: standalone activation forward/backward summaries;
 - `compute_sanitizer_rms_norm_*.log`: RMSNorm forward/backward sanitizer summaries;
 - `compute_sanitizer_residual_rms_norm_*.log`: fused residual RMSNorm sanitizer summaries;
 - `compute_sanitizer_elementwise_*.log`: SwiGLU and RoPE sanitizer summaries;
@@ -27,7 +29,7 @@ Results are machine-specific evidence, not universal performance guarantees.
 Regenerate them with:
 
 ```bash
-uv run tklab-bench --force-peaks
+uv run --frozen tklab-bench --force-peaks
 ```
 
 Do not edit generated JSON manually. The benchmark CLI writes files

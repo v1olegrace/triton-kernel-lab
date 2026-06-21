@@ -31,7 +31,7 @@ cast operations. Run it together with fused residual RMSNorm in one clean GPU
 session:
 
 ```bash
-uv run tklab-bench \
+uv run --frozen tklab-bench \
   --kernel rms_norm_forward \
   --kernel residual_rms_norm_forward
 ```
@@ -106,7 +106,7 @@ The longer stress study runs 50 repetitions at group sizes 1, 8, 256, and
 2048:
 
 ```bash
-uv run python benchmarks/rms_norm_lock_stress.py
+uv run --frozen python benchmarks/rms_norm_lock_stress.py
 ```
 
 On the RTX 4060, all 200 stage-1 launches released every lock, initialized

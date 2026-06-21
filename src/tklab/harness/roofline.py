@@ -8,6 +8,7 @@ cuBLAS throughput.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 import subprocess
@@ -24,7 +25,7 @@ import triton
 
 from tklab.harness.jsonio import JsonObject, read_json_object, write_json_atomic
 
-PEAKS_SCHEMA_VERSION = 3
+PEAKS_SCHEMA_VERSION = 4
 DEFAULT_BW_ELEMENT_COUNTS = tuple(2**exponent for exponent in range(22, 26))
 DEFAULT_TFLOPS_SIZES = (512, 1024, 2048, 4096, 8192)
 _NVIDIA_RTX4060_SPEC_URL = (
@@ -331,7 +332,15 @@ def load_or_measure_peaks(
     output_path = output_dir / "peaks.json"
     if output_path.exists() and not force:
         stored = read_json_object(output_path)
-        _validate_stored_peaks(stored, path=output_path)
+        major, minor = torch.cuda.get_device_capability(device)
+        _validate_stored_peaks(
+            stored,
+            path=output_path,
+            expected_gpu_name=torch.cuda.get_device_name(device),
+            expected_compute_capability=f"{major}.{minor}",
+            expected_torch_version=torch.__version__,
+            expected_triton_version=triton.__version__,
+        )
         return cast(PeakResults, stored), output_path
 
     peaks = measure_peaks(device)
@@ -512,10 +521,17 @@ def _nvidia_smi_integer(
             capture_output=True,
             text=True,
             check=True,
+            timeout=30,
         )
         first_line = result.stdout.strip().splitlines()[0]
         return int(first_line)
-    except (FileNotFoundError, subprocess.CalledProcessError, IndexError, ValueError) as error:
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        IndexError,
+        ValueError,
+    ) as error:
         raise RuntimeError(error_message) from error
 
 
@@ -546,8 +562,16 @@ def _validate_cuda_device(device: int) -> None:
         )
 
 
-def _validate_stored_peaks(payload: JsonObject, *, path: Path) -> None:
-    """Validate the schema discriminator and essential cached fields."""
+def _validate_stored_peaks(
+    payload: JsonObject,
+    *,
+    path: Path,
+    expected_gpu_name: str,
+    expected_compute_capability: str,
+    expected_torch_version: str,
+    expected_triton_version: str,
+) -> None:
+    """Validate cached peak provenance against the active software and GPU."""
     if payload.get("schema_version") != PEAKS_SCHEMA_VERSION:
         raise ValueError(f"{path}: incompatible peaks schema; rerun with --force-peaks")
     required_fields = {
@@ -556,7 +580,68 @@ def _validate_stored_peaks(payload: JsonObject, *, path: Path) -> None:
         "cublas_tflops_fp16_fp32acc",
         "theoretical_tflops_fp16_fp32acc_at_measured_clock",
         "theoretical_tflops_fp16_fp16acc_at_measured_clock",
+        "theoretical_provenance",
     }
     missing = sorted(required_fields.difference(payload))
     if missing:
         raise ValueError(f"{path}: missing required fields: {', '.join(missing)}")
+
+    positive_numeric_fields = {
+        "peak_bw_gbps",
+        "cublas_tflops_fp16_fp32acc",
+        "theoretical_tflops_fp16_fp32acc_at_measured_clock",
+        "theoretical_tflops_fp16_fp16acc_at_measured_clock",
+    }
+    invalid_numeric: list[str] = []
+    for field in sorted(positive_numeric_fields):
+        value = payload[field]
+        if (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            invalid_numeric.append(field)
+    if invalid_numeric:
+        raise ValueError(
+            f"{path}: cached peaks contain invalid positive numeric fields: "
+            f"{', '.join(invalid_numeric)}"
+        )
+
+    provenance = payload["theoretical_provenance"]
+    if not isinstance(provenance, dict):
+        raise ValueError(f"{path}: theoretical_provenance must be an object")
+    required_provenance_fields = {
+        "model",
+        "rated_boost_clock_mhz",
+        "streaming_multiprocessors",
+        "tensor_cores_per_sm",
+        "fp16_fp32acc_flops_per_clock_per_tensor_core",
+        "fp16_fp32acc_rated_tflops",
+        "fp16_fp16acc_rated_tflops",
+        "product_spec_url",
+        "architecture_whitepaper_url",
+    }
+    missing_provenance = sorted(required_provenance_fields.difference(provenance))
+    if missing_provenance:
+        raise ValueError(
+            f"{path}: theoretical_provenance is missing fields: {', '.join(missing_provenance)}"
+        )
+
+    expected = {
+        "gpu_name": expected_gpu_name,
+        "compute_capability": expected_compute_capability,
+        "torch_version": expected_torch_version,
+        "triton_version": expected_triton_version,
+    }
+    mismatches = [
+        f"{field}={payload.get(field)!r} (expected {value!r})"
+        for field, value in expected.items()
+        if payload.get(field) != value
+    ]
+    if mismatches:
+        details = "; ".join(mismatches)
+        raise ValueError(
+            f"{path}: cached peaks do not match the active environment: {details}; "
+            "rerun with --force-peaks"
+        )

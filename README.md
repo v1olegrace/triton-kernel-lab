@@ -50,6 +50,7 @@ and plots then consume the same contract.
 | Kernel | Main concepts | Primary metric |
 |---|---|---|
 | `vector_add` | masked tails, arbitrary 1D strides | effective GB/s |
+| `relu` / `gelu` / `silu` / `tanh` | FP32 nonlinear math, deterministic elementwise backward | bandwidth roofline |
 | `fused_softmax` | reduction, `-inf` tail sentinel, FP32 reduction | bandwidth roofline |
 | `matmul_fp32acc` | Tensor Cores, L2 grouping, autotune, FP32 accumulate | % of cuBLAS |
 | `matmul_fp16acc` | FP16 Tensor Core accumulation and accuracy trade-off | % theoretical |
@@ -58,10 +59,11 @@ and plots then consume the same contract.
 | `residual_rms_norm_forward` | fused residual stream update, two-output autograd | bandwidth roofline |
 | `swiglu_forward` | stable FP32 sigmoid, deterministic gated backward | bandwidth roofline |
 | `rope_forward` | rotate-half convention, inverse-rotation backward | bandwidth roofline |
-| `attention_noncausal` / `attention_causal` | online softmax, tiled Q/K/V, causal staging | TFLOP/s vs SDPA |
+| `attention_noncausal` / `attention_causal` | online softmax, tiled Q/K/V, causal staging, recompute backward | TFLOP/s vs SDPA |
 
 Kernel-specific analysis is available in:
 
+- [Elementwise activations](docs/activations.md)
 - [Fused softmax](docs/fused_softmax.md)
 - [Matrix multiplication](docs/matmul.md)
 - [LayerNorm with backward](docs/layer_norm.md)
@@ -69,7 +71,7 @@ Kernel-specific analysis is available in:
 - [Fused residual addition and RMSNorm](docs/residual_rms_norm.md)
 - [SwiGLU](docs/swiglu.md)
 - [Rotate-half RoPE](docs/rope.md)
-- [Flash Attention forward](docs/flash_attention.md)
+- [Flash Attention forward and backward](docs/flash_attention.md)
 - [Benchmark methodology](docs/benchmarking.md)
 - [GPU debugging and profiling](docs/debugging.md)
 - [Engineering review](docs/code_review.md)
@@ -147,21 +149,21 @@ Clone and create a reproducible environment:
 git clone https://github.com/v1olegrace/triton-kernel-lab.git
 cd triton-kernel-lab
 
-uv python install 3.12
-uv sync --extra dev
+uv python install 3.12.13
+uv sync --extra dev --frozen
 ```
 
 Verify the stack:
 
 ```bash
-uv run python -c \
+uv run --frozen python -c \
   "import torch, triton; print(torch.__version__, triton.__version__, torch.cuda.get_device_name())"
 ```
 
 Install pre-commit hooks:
 
 ```bash
-uv run pre-commit install
+uv run --frozen pre-commit install
 ```
 
 ### WSL2 note
@@ -172,8 +174,23 @@ is unreliable:
 
 ```bash
 export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/triton-kernel-lab"
-uv sync --extra dev
+uv sync --extra dev --frozen
 ```
+
+### Docker
+
+A pinned CUDA image reproduces the documented stack without hand-assembling a
+WSL2 + driver + `uv` environment. The NVIDIA driver is supplied by the host
+through the [NVIDIA Container Toolkit](https://github.com/NVIDIA/nvidia-container-toolkit);
+only the CUDA toolkit lives in the image.
+
+```bash
+make docker-build                 # build the pinned image
+make docker-test-gpu              # run the real-GPU correctness suite
+docker run --rm triton-kernel-lab make all   # static checks + CPU layers, no GPU
+```
+
+See [docs/docker.md](docs/docker.md) for the layer layout and caching notes.
 
 ## Usage
 
@@ -218,13 +235,13 @@ rotated = rope(a, torch.cos(angles).half(), torch.sin(angles).half())
 List kernels:
 
 ```bash
-uv run tklab-bench --list-kernels
+uv run --frozen tklab-bench --list-kernels
 ```
 
 Benchmark one kernel using an existing peak cache:
 
 ```bash
-uv run tklab-bench --kernel fused_softmax
+uv run --frozen tklab-bench --kernel fused_softmax
 ```
 
 The CLI refuses to benchmark when pre-existing GPU utilization exceeds 10%.
@@ -235,7 +252,7 @@ runs.
 Recalibrate rooflines and benchmark both matmul modes:
 
 ```bash
-uv run tklab-bench \
+uv run --frozen tklab-bench \
   --force-peaks \
   --kernel matmul_fp32acc \
   --kernel matmul_fp16acc
@@ -244,21 +261,21 @@ uv run tklab-bench \
 Benchmark LayerNorm forward and its two backward stages:
 
 ```bash
-uv run tklab-bench --kernel layer_norm_forward
-uv run python benchmarks/layer_norm_backward.py
+uv run --frozen tklab-bench --kernel layer_norm_forward
+uv run --frozen python benchmarks/layer_norm_backward.py
 ```
 
 Benchmark RMSNorm forward and reproduce its lock stress:
 
 ```bash
-uv run tklab-bench --kernel rms_norm_forward
-uv run python benchmarks/rms_norm_lock_stress.py
+uv run --frozen tklab-bench --kernel rms_norm_forward
+uv run --frozen python benchmarks/rms_norm_lock_stress.py
 ```
 
 Benchmark RMSNorm and residual RMSNorm together during one clean GPU session:
 
 ```bash
-uv run tklab-bench \
+uv run --frozen tklab-bench \
   --kernel rms_norm_forward \
   --kernel residual_rms_norm_forward
 ```
@@ -267,7 +284,7 @@ The final portfolio benchmark should run the complete registry once after a
 clean boot with GPU applications closed:
 
 ```bash
-uv run tklab-bench --force-peaks
+uv run --frozen tklab-bench --force-peaks
 ```
 
 The CLI writes versioned JSON and PNG files under `results/<gpu_slug>/`.
@@ -306,6 +323,9 @@ lock-contention studies, and Nsight Compute commands are documented in
   limitation.
 - RMSNorm and residual RMSNorm record both their native `F.rms_norm`
   composition and a deliberately decomposed PyTorch baseline.
+- Public LayerNorm, RMSNorm, residual RMSNorm, and attention wrappers skip
+  backward-only statistics when gradients are disabled or no input requires
+  gradients.
 - Softmax also measures a deliberately naive multi-pass baseline.
 - Memory cost models depend on dtype.
 - Compute calibration warms the GPU to steady state and records SM clocks.
@@ -325,12 +345,16 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 ├── benchmarks/
 │   ├── flash_attention_memory.py
 │   ├── layer_norm_backward.py  # two-stage backward study
+│   ├── layer_norm_lock_stress.py
+│   ├── profile_matmul.py
 │   ├── rms_norm_lock_stress.py # single-buffer lock validation
 │   └── run.py                  # compatibility entry point
 ├── docs/
+│   ├── activations.md
 │   ├── benchmarking.md
 │   ├── code_review.md
 │   ├── debugging.md
+│   ├── docker.md
 │   ├── flash_attention.md
 │   ├── fused_softmax.md
 │   ├── layer_norm.md
@@ -345,12 +369,16 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │   ├── cli.py                  # installed tklab-bench command
 │   ├── registry.py             # KernelSpec and global registry
 │   ├── harness/
+│   │   ├── addressing.py
 │   │   ├── bench.py
 │   │   ├── jsonio.py
 │   │   ├── plots.py
 │   │   ├── roofline.py
 │   │   └── tolerances.py
 │   └── kernels/
+│       ├── _elementwise_math.py
+│       ├── _norm_common.py
+│       ├── activations.py
 │       ├── flash_attention.py
 │       ├── fused_softmax.py
 │       ├── layer_norm.py
@@ -361,7 +389,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │       ├── swiglu.py
 │       └── vector_add.py
 ├── tests/
+├── .python-version
 ├── CONTRIBUTING.md
+├── Dockerfile
 ├── LICENSE
 ├── SECURITY.md
 └── pyproject.toml
@@ -386,11 +416,16 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   residual-sum-only backward bypasses the lock reduction.
 - SwiGLU and RoPE currently accept 2D tensors with contiguous final
   dimensions. RoPE uses half-dimension angle tables and requires an even
-  feature width.
-- Flash Attention forward currently supports contiguous FP16 Q/K/V with
-  `head_dim=64` and specializes per compile-time sequence length. Dropout,
+  feature width. Their custom backward implementations support first-order
+  gradients only.
+- The standalone ReLU/GELU/SiLU/tanh kernels support first-order gradients
+  only.
+- Flash Attention supports contiguous FP16 Q/K/V with `head_dim=64` and
+  specializes per compile-time sequence length. Forward and a recompute-based
+  backward (`dQ`/`dK`/`dV`, causal and non-causal) are implemented. Dropout,
   attention bias, grouped-query attention, variable-length production
-  bucketing, larger head dimensions, and backward are outside Phase 6A.
+  bucketing, larger head dimensions, and higher-order gradients remain out of
+  scope.
 - The contiguous matmul fast path matches the measured cuBLAS peak in FP32
   accumulation on this RTX 4060. Split-K atomics regressed; persistent/stream-K
   designs and profiler evidence remain future work for broader shapes.
