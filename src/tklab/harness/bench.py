@@ -32,6 +32,7 @@ class BenchRow(TypedDict):
     reference_baseline: NotRequired[str]
     naive_baseline: NotRequired[str]
     reference_allocates_output: NotRequired[bool]
+    naive_allocates_output: NotRequired[bool]
     reference_tflops: NotRequired[float]
     pct_cublas_same_size: NotRequired[float]
     pct_cublas_peak: NotRequired[float]

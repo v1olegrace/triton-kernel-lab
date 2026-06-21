@@ -49,11 +49,12 @@ Sources:
 
 The best clean measurements with Triton 3.7.1 were:
 
-- FP32 accumulation: 30.95 TFLOP/s at N=2048, or 96.5% of the
-  clock-scaled theoretical ceiling and 100.2% of cuBLAS at the same size.
-- FP16 accumulation: 53.09 TFLOP/s at N=2048, 80.0% of the clock-scaled
-  theoretical ceiling.
-- End-to-end accumulation-mode gap: 1.72x at N=2048 and 1.63x at N=4096.
+- FP32 accumulation: 32.01 TFLOP/s at N=4096, or 95.95% of the
+  maximum-observed-clock theoretical ceiling and 102.29% of cuBLAS at the
+  same size.
+- FP16 accumulation: 53.09 TFLOP/s at N=2048, 79.57% of the
+  maximum-observed-clock theoretical ceiling.
+- End-to-end accumulation-mode gap: 1.72x at N=2048 and 1.50x at N=4096.
 
 PTX inspection confirms that the two variants select different instructions:
 
@@ -143,13 +144,13 @@ variant.
 
 ## cuBLAS denominator
 
-Result schema 4 separates two quantities:
+Result schema 6 separates two quantities:
 
 - `pct_cublas_same_size`: Triton divided by cuBLAS at the same N;
 - `pct_cublas_peak`: Triton divided by the best cuBLAS result in the full
   size sweep.
 
-For example, the final FP32 kernel reaches 15.42 TFLOP/s at N=512: 49.9% of
-the global 30.9 TFLOP/s cuBLAS peak, but 117.7% of cuBLAS at the same size.
+For example, the final FP32 kernel reaches 15.31 TFLOP/s at N=512: 48.84% of
+the global 31.35 TFLOP/s cuBLAS peak, but 117.34% of cuBLAS at the same size.
 The former is a roofline-utilization number; the latter is the valid
 same-shape scheduling comparison.

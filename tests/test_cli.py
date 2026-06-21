@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tklab.cli import parse_args
+from tklab.cli import _gpu_utilization_samples, parse_args
 
 
 def test_parse_args_selects_multiple_kernels() -> None:
@@ -37,3 +37,22 @@ def test_parse_args_rejects_unknown_kernel() -> None:
     """Let argparse reject unknown registry keys."""
     with pytest.raises(SystemExit):
         parse_args(["--kernel", "missing"])
+
+
+def test_gpu_preflight_collects_repeated_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Use the complete sample window rather than a single idle reading."""
+    values = iter((3, 4, 5))
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "tklab.cli.gpu_utilization_pct",
+        lambda device: next(values),
+    )
+    monkeypatch.setattr("tklab.cli.time.sleep", sleeps.append)
+    assert _gpu_utilization_samples(0, sample_count=3, interval_seconds=0.25) == (
+        3,
+        4,
+        5,
+    )
+    assert sleeps == [0.25, 0.25]

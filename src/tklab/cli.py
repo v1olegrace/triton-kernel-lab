@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -21,8 +23,10 @@ from tklab.harness.plots import (
 from tklab.harness.roofline import PeakResults, gpu_utilization_pct, load_or_measure_peaks
 from tklab.registry import REGISTRY, KernelSpec
 
-RESULT_SCHEMA_VERSION = 4
+RESULT_SCHEMA_VERSION = 6
 MAX_IDLE_GPU_UTILIZATION_PCT = 10
+GPU_PREFLIGHT_SAMPLE_COUNT = 5
+GPU_PREFLIGHT_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,10 +123,14 @@ def run_benchmarks(
     """
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for benchmarks")
-    utilization = gpu_utilization_pct(options.device)
-    if not options.allow_busy_gpu and utilization > MAX_IDLE_GPU_UTILIZATION_PCT:
+    benchmark_started_at_utc = datetime.now(timezone.utc).isoformat()
+    utilization_samples = _gpu_utilization_samples(options.device)
+    maximum_utilization = max(utilization_samples)
+    print(f"preflight GPU utilization: {','.join(str(value) for value in utilization_samples)}%")
+    if not options.allow_busy_gpu and maximum_utilization > MAX_IDLE_GPU_UTILIZATION_PCT:
         raise RuntimeError(
-            f"GPU {options.device} is already {utilization}% utilized; "
+            f"GPU {options.device} reached {maximum_utilization}% utilization "
+            f"during preflight; "
             "close GPU workloads or pass --allow-busy-gpu to accept contaminated results"
         )
     selected_specs = _select_specs(options.kernels)
@@ -132,6 +140,9 @@ def run_benchmarks(
         results_root,
         device=options.device,
         force=options.force_peaks,
+        calibration_started_at_utc=benchmark_started_at_utc,
+        calibration_preflight_gpu_utilization_pct=utilization_samples,
+        calibration_preflight_gpu_utilization_limit_pct=MAX_IDLE_GPU_UTILIZATION_PCT,
     )
     output_dir = peaks_path.parent
     _print_peak_summary(peaks, path=peaks_path)
@@ -150,7 +161,13 @@ def run_benchmarks(
         )
         plot_payload: BenchmarkPayload = {"rows": rows}
         payloads[spec.name] = plot_payload
-        result_payload = _result_payload(spec, rows=rows, peaks=peaks)
+        result_payload = _result_payload(
+            spec,
+            rows=rows,
+            peaks=peaks,
+            benchmark_started_at_utc=benchmark_started_at_utc,
+            benchmark_preflight_gpu_utilization_pct=utilization_samples,
+        )
         output_path = output_dir / f"{spec.name}.json"
         write_json_atomic(output_path, result_payload)
 
@@ -204,6 +221,25 @@ def _select_specs(kernel_names: tuple[str, ...] | None) -> list[KernelSpec]:
     return specs
 
 
+def _gpu_utilization_samples(
+    device: int,
+    *,
+    sample_count: int = GPU_PREFLIGHT_SAMPLE_COUNT,
+    interval_seconds: float = GPU_PREFLIGHT_INTERVAL_SECONDS,
+) -> tuple[int, ...]:
+    """Sample whole-device utilization repeatedly before benchmarking."""
+    if sample_count <= 0:
+        raise ValueError("GPU preflight sample count must be positive")
+    if interval_seconds < 0:
+        raise ValueError("GPU preflight interval must be non-negative")
+    samples: list[int] = []
+    for index in range(sample_count):
+        samples.append(gpu_utilization_pct(device))
+        if index + 1 < sample_count:
+            time.sleep(interval_seconds)
+    return tuple(samples)
+
+
 def _compute_baselines(
     spec: KernelSpec,
     peaks: PeakResults,
@@ -232,6 +268,8 @@ def _result_payload(
     *,
     rows: list[BenchRow],
     peaks: PeakResults,
+    benchmark_started_at_utc: str,
+    benchmark_preflight_gpu_utilization_pct: tuple[int, ...],
 ) -> JsonObject:
     """Build the versioned JSON payload for one kernel."""
     payload = {
@@ -242,6 +280,16 @@ def _result_payload(
         "compute_capability": peaks["compute_capability"],
         "torch_version": peaks["torch_version"],
         "triton_version": peaks["triton_version"],
+        "benchmark_started_at_utc": benchmark_started_at_utc,
+        "benchmark_preflight_gpu_utilization_pct": list(benchmark_preflight_gpu_utilization_pct),
+        "benchmark_preflight_gpu_utilization_limit_pct": (MAX_IDLE_GPU_UTILIZATION_PCT),
+        "peak_calibration_started_at_utc": peaks["calibration_started_at_utc"],
+        "peak_calibration_preflight_gpu_utilization_pct": peaks[
+            "calibration_preflight_gpu_utilization_pct"
+        ],
+        "peak_calibration_preflight_gpu_utilization_limit_pct": peaks[
+            "calibration_preflight_gpu_utilization_limit_pct"
+        ],
         "peak_bw_gbps": peaks["peak_bw_gbps"],
         "cublas_tflops_fp16_fp32acc": peaks["cublas_tflops_fp16_fp32acc"],
         "cublas_tflops_fp16_reduced_precision_allowed": peaks[
@@ -254,6 +302,7 @@ def _result_payload(
         "theoretical_tflops_fp16_fp16acc_at_measured_clock": peaks[
             "theoretical_tflops_fp16_fp16acc_at_measured_clock"
         ],
+        "theoretical_ceiling_sm_clock_mhz": peaks["theoretical_ceiling_sm_clock_mhz"],
         "compute_mode": spec.compute_mode,
         "rows": rows,
     }
@@ -268,13 +317,14 @@ def _print_peak_summary(peaks: PeakResults, *, path: Path) -> None:
         f"measured cuBLAS FP16/FP32-acc baseline: {peaks['cublas_tflops_fp16_fp32acc']:.3f} TFLOP/s"
     )
     print(
-        "clock-scaled theoretical FP16/FP32-acc: "
+        "maximum-observed-clock theoretical FP16/FP32-acc: "
         f"{peaks['theoretical_tflops_fp16_fp32acc_at_measured_clock']:.3f} TFLOP/s"
     )
     print(
-        "clock-scaled theoretical FP16/FP16-acc: "
+        "maximum-observed-clock theoretical FP16/FP16-acc: "
         f"{peaks['theoretical_tflops_fp16_fp16acc_at_measured_clock']:.3f} TFLOP/s"
     )
+    print(f"theoretical ceiling clock: {peaks['theoretical_ceiling_sm_clock_mhz']} MHz")
 
 
 def _print_result_summary(

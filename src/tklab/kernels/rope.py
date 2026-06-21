@@ -333,6 +333,19 @@ def _torch_rope(
     )
 
 
+def _naive_rope(
+    x: torch.Tensor,
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+) -> torch.Tensor:
+    """Materialize rotate-half and full-width angle tables before combining."""
+    x_first, x_second = x.chunk(2, dim=-1)
+    rotated = torch.cat((-x_second, x_first), dim=-1)
+    cos_full = torch.cat((cos, cos), dim=-1)
+    sin_full = torch.cat((sin, sin), dim=-1)
+    return x * cos_full + rotated * sin_full
+
+
 def _make_inputs(
     columns: int,
     device: torch.device,
@@ -385,9 +398,10 @@ def _benchmark_metadata(
     """Describe the rotate-half reference convention."""
     del columns, dtype
     return {
-        "reference_baseline": "PyTorch rotate-half composition with torch.cat",
-        "naive_baseline": "not applicable",
+        "reference_baseline": "direct half-wise PyTorch rotate-half composition",
+        "naive_baseline": "materialized full-width tables and rotate-half tensor",
         "reference_allocates_output": True,
+        "naive_allocates_output": True,
     }
 
 
@@ -412,6 +426,7 @@ ROPE = register(
         bound="memory",
         bytes_moved=_bytes_moved,
         dtypes=(torch.float16,),
+        naive_fn=_naive_rope,
         benchmark_metadata=_benchmark_metadata,
         benchmark_call_factory=_make_benchmark_call,
         supports_interpreter=False,

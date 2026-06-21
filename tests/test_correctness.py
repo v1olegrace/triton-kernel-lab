@@ -39,12 +39,18 @@ def test_matches_reference_on_gpu(name: str) -> None:
             output = spec.triton_fn(*args)
             reference = spec.ref_fn(*(argument.float() for argument in args))
             _assert_spec_output(spec, output, reference)
+            if spec.naive_fn is not None:
+                naive = spec.naive_fn(*args)
+                _assert_spec_output(spec, naive, reference)
 
     if spec.make_adversarial is not None:
         args = spec.make_adversarial(device)
         output = spec.triton_fn(*args)
         reference = spec.ref_fn(*(argument.float() for argument in args))
         _assert_spec_output(spec, output, reference)
+        if spec.naive_fn is not None:
+            naive = spec.naive_fn(*args)
+            _assert_spec_output(spec, naive, reference)
 
 
 @pytest.mark.interpret

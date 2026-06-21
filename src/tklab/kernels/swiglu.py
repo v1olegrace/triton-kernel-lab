@@ -297,6 +297,7 @@ def _benchmark_metadata(
         "reference_baseline": "value * torch.nn.functional.silu(gate)",
         "naive_baseline": "stable FP32 sigmoid and explicit pointwise composition",
         "reference_allocates_output": True,
+        "naive_allocates_output": True,
     }
 
 

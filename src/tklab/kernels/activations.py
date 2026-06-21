@@ -20,6 +20,7 @@ Implemented activations:
 
 from __future__ import annotations
 
+import math
 from functools import partial
 from typing import Any, cast
 
@@ -31,7 +32,14 @@ from torch.autograd.function import once_differentiable
 
 from tklab.harness.addressing import assert_int32_addressable
 from tklab.kernels._elementwise_math import stable_sigmoid
-from tklab.registry import BenchmarkCall, KernelSpec, TensorArgs, TensorFn, register
+from tklab.registry import (
+    BenchmarkCall,
+    BenchmarkScalar,
+    KernelSpec,
+    TensorArgs,
+    TensorFn,
+    register,
+)
 
 _ROWS = 4096
 _BLOCK_SIZE = 256
@@ -274,12 +282,38 @@ def _bytes_moved(columns: int, dtype: torch.dtype) -> int:
     return 2 * _ROWS * columns * element_size
 
 
+def _naive_relu(x: torch.Tensor) -> torch.Tensor:
+    """Compose ReLU from a comparison and selection."""
+    return torch.where(x > 0, x, 0.0)
+
+
+def _naive_gelu(x: torch.Tensor) -> torch.Tensor:
+    """Compose exact GELU from explicit FP32 erf operations."""
+    x_float = x.float()
+    return (0.5 * x_float * (1.0 + torch.erf(x_float / math.sqrt(2.0)))).to(x.dtype)
+
+
+def _naive_silu(x: torch.Tensor) -> torch.Tensor:
+    """Compose SiLU from explicit FP32 sigmoid and multiplication."""
+    x_float = x.float()
+    return (x_float * torch.sigmoid(x_float)).to(x.dtype)
+
+
+def _naive_tanh(x: torch.Tensor) -> torch.Tensor:
+    """Compose tanh through the sigmoid identity used by the Triton kernel."""
+    x_float = x.float()
+    return (2.0 * torch.sigmoid(2.0 * x_float) - 1.0).to(x.dtype)
+
+
 def _register_activation(
     *,
     name: str,
     activation: int,
     triton_fn: TensorFn,
     ref_fn: TensorFn,
+    naive_fn: TensorFn,
+    reference_baseline: str,
+    naive_baseline: str,
     description: str,
 ) -> KernelSpec:
     """Register one activation specification with the shared harness wiring."""
@@ -291,6 +325,19 @@ def _register_activation(
     def benchmark_call(args: TensorArgs, output: torch.Tensor) -> BenchmarkCall:
         """Prepare the allocation-free Triton benchmark call."""
         return partial(_launch_forward, args[0], output, activation=activation)
+
+    def benchmark_metadata(
+        columns: int,
+        dtype: torch.dtype,
+    ) -> dict[str, BenchmarkScalar]:
+        """Describe the fused native and decomposed activation baselines."""
+        del columns, dtype
+        return {
+            "reference_baseline": reference_baseline,
+            "naive_baseline": naive_baseline,
+            "reference_allocates_output": True,
+            "naive_allocates_output": True,
+        }
 
     return register(
         KernelSpec(
@@ -307,6 +354,8 @@ def _register_activation(
             bound="memory",
             bytes_moved=_bytes_moved,
             dtypes=(torch.float16,),
+            naive_fn=naive_fn,
+            benchmark_metadata=benchmark_metadata,
             benchmark_call_factory=benchmark_call,
             supports_interpreter=False,
         )
@@ -318,6 +367,9 @@ RELU = _register_activation(
     activation=_RELU,
     triton_fn=relu,
     ref_fn=torch.relu,
+    naive_fn=_naive_relu,
+    reference_baseline="torch.relu",
+    naive_baseline="torch.where(x > 0, x, 0)",
     description="Elementwise ReLU with deterministic autograd.",
 )
 
@@ -326,6 +378,9 @@ GELU = _register_activation(
     activation=_GELU,
     triton_fn=gelu,
     ref_fn=F.gelu,
+    naive_fn=_naive_gelu,
+    reference_baseline='torch.nn.functional.gelu(approximate="none")',
+    naive_baseline="explicit FP32 erf GELU composition",
     description="Elementwise exact (erf) GELU with deterministic autograd.",
 )
 
@@ -334,6 +389,9 @@ SILU = _register_activation(
     activation=_SILU,
     triton_fn=silu,
     ref_fn=F.silu,
+    naive_fn=_naive_silu,
+    reference_baseline="torch.nn.functional.silu",
+    naive_baseline="explicit FP32 x * sigmoid(x) composition",
     description="Elementwise SiLU/swish with deterministic autograd.",
 )
 
@@ -342,5 +400,8 @@ TANH = _register_activation(
     activation=_TANH,
     triton_fn=tanh,
     ref_fn=torch.tanh,
+    naive_fn=_naive_tanh,
+    reference_baseline="torch.tanh",
+    naive_baseline="explicit FP32 2 * sigmoid(2x) - 1 composition",
     description="Elementwise tanh with deterministic autograd.",
 )

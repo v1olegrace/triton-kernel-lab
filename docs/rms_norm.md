@@ -36,8 +36,8 @@ uv run --frozen tklab-bench \
   --kernel residual_rms_norm_forward
 ```
 
-No RMSNorm performance number is claimed until the GPU-idle guard accepts
-that run and the resulting artifacts are committed.
+The accepted clean-session measurements and both baseline comparisons are
+stored in `results/nvidia_geforce_rtx_4060/rms_norm_forward.json`.
 
 ## Backward formula
 

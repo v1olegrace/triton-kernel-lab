@@ -5,11 +5,13 @@ from __future__ import annotations
 import pytest
 import torch
 
+import tklab.kernels  # noqa: F401
 from tklab.harness.bench import BenchRow, _add_performance_metrics
 from tklab.kernels.flash_attention import ATTENTION_CAUSAL, ATTENTION_NONCAUSAL
 from tklab.kernels.matmul import MATMUL_FP32ACC
 from tklab.kernels.residual_rms_norm import RESIDUAL_RMS_NORM
 from tklab.kernels.rms_norm import RMS_NORM
+from tklab.registry import REGISTRY
 
 
 def test_compute_metrics_separate_same_size_cublas_from_peak() -> None:
@@ -63,3 +65,19 @@ def test_norm_specs_expose_native_and_naive_baseline_metadata() -> None:
         assert metadata["reference_allocates_output"] is True
         assert isinstance(metadata["reference_baseline"], str)
         assert isinstance(metadata["naive_baseline"], str)
+
+
+def test_memory_specs_expose_two_labeled_baselines() -> None:
+    """Require both native/reference and decomposed comparisons in final JSONs."""
+    for spec in REGISTRY.values():
+        if spec.bound != "memory":
+            continue
+        assert spec.naive_fn is not None or spec.naive_call_factory is not None
+        assert spec.benchmark_metadata is not None
+        metadata = spec.benchmark_metadata(spec.sizes[0], spec.dtypes[0])
+        assert isinstance(metadata["reference_baseline"], str)
+        assert isinstance(metadata["naive_baseline"], str)
+        assert metadata["reference_baseline"]
+        assert metadata["naive_baseline"]
+        assert isinstance(metadata["reference_allocates_output"], bool)
+        assert isinstance(metadata["naive_allocates_output"], bool)

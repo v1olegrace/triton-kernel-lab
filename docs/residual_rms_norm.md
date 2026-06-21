@@ -123,5 +123,6 @@ uv run --frozen tklab-bench \
   --kernel residual_rms_norm_forward
 ```
 
-The CLI refuses pre-existing GPU utilization above 10%. No performance number
-is claimed until that clean run produces committed JSON and plots.
+The CLI refuses pre-existing GPU utilization above 10%. The accepted
+clean-session measurements and both baseline comparisons are stored in
+`results/nvidia_geforce_rtx_4060/residual_rms_norm_forward.json`.

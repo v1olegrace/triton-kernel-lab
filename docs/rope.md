@@ -83,8 +83,15 @@ read x + read cos/sin + write output
 = 3 * rows * columns * element_size
 ```
 
-The PyTorch baseline uses the same split, pairwise formulas, and `torch.cat`.
-Official performance numbers are deferred to the single clean benchmark
-session for the complete registry.
+Each output element performs two multiplies and one add/subtract. In FP16,
+that is approximately `3 FLOPs / 6 bytes = 0.5 FLOP/byte`, far below this
+session's FP16/FP32-accumulate ridge point of 133.37 FLOP/byte. The clean run
+reached 246.995 GB/s, or 98.74% of the measured bandwidth ceiling, confirming
+the memory-bound classification.
+
+The production-reference baseline uses direct half-wise pairwise formulas.
+The deliberately naive baseline materializes full-width cosine/sine tables
+and the rotate-half tensor. The accepted complete-registry run is stored in
+`results/nvidia_geforce_rtx_4060/rope_forward.json`.
 
 The custom autograd function implements first-order differentiation only.

@@ -25,7 +25,7 @@ import triton
 
 from tklab.harness.jsonio import JsonObject, read_json_object, write_json_atomic
 
-PEAKS_SCHEMA_VERSION = 4
+PEAKS_SCHEMA_VERSION = 6
 DEFAULT_BW_ELEMENT_COUNTS = tuple(2**exponent for exponent in range(22, 26))
 DEFAULT_TFLOPS_SIZES = (512, 1024, 2048, 4096, 8192)
 _NVIDIA_RTX4060_SPEC_URL = (
@@ -107,6 +107,7 @@ class TheoreticalProvenance(TypedDict):
     fp16_fp32acc_flops_per_clock_per_tensor_core: int
     fp16_fp32acc_rated_tflops: float
     fp16_fp16acc_rated_tflops: float
+    ceiling_clock_policy: str
     product_spec_url: str
     architecture_whitepaper_url: str
 
@@ -120,6 +121,9 @@ class PeakResults(TypedDict):
     compute_capability: str
     torch_version: str
     triton_version: str
+    calibration_started_at_utc: str
+    calibration_preflight_gpu_utilization_pct: list[int]
+    calibration_preflight_gpu_utilization_limit_pct: int
     peak_bw_gbps: float
     bandwidth_elements: int
     bandwidth_samples: list[BandwidthSample]
@@ -130,6 +134,7 @@ class PeakResults(TypedDict):
     theoretical_tflops_fp16_fp32acc_at_measured_clock: float
     theoretical_tflops_fp16_fp16acc_rated: float
     theoretical_tflops_fp16_fp16acc_at_measured_clock: float
+    theoretical_ceiling_sm_clock_mhz: int
     tflops_samples: list[TflopsSample]
     tflops_samples_reduced_precision_allowed: list[TflopsSample]
     best_tflops_size: int
@@ -221,11 +226,22 @@ def theoretical_tflops_fp16_fp16acc(
     return profile.fp16_fp16acc_tflops(sm_clock_mhz)
 
 
-def measure_peaks(device: int = 0) -> PeakResults:
+def measure_peaks(
+    device: int = 0,
+    *,
+    calibration_started_at_utc: str,
+    calibration_preflight_gpu_utilization_pct: tuple[int, ...],
+    calibration_preflight_gpu_utilization_limit_pct: int,
+) -> PeakResults:
     """Calibrate empirical and theoretical roofline baselines.
 
     Args:
         device: CUDA device index.
+        calibration_started_at_utc: ISO-8601 start time for this clean run.
+        calibration_preflight_gpu_utilization_pct: Utilization samples
+            collected before calibration.
+        calibration_preflight_gpu_utilization_limit_pct: Maximum permitted
+            preflight utilization.
 
     Returns:
         Versioned peak-calibration payload.
@@ -260,6 +276,10 @@ def measure_peaks(device: int = 0) -> PeakResults:
         reduced_precision_samples,
         key=lambda sample: sample["tflops"],
     )
+    theoretical_ceiling_clock_mhz = _maximum_observed_sm_clock_mhz(
+        precise_samples,
+        reduced_precision_samples,
+    )
 
     return {
         "schema_version": PEAKS_SCHEMA_VERSION,
@@ -268,6 +288,13 @@ def measure_peaks(device: int = 0) -> PeakResults:
         "compute_capability": f"{major}.{minor}",
         "torch_version": torch.__version__,
         "triton_version": triton.__version__,
+        "calibration_started_at_utc": calibration_started_at_utc,
+        "calibration_preflight_gpu_utilization_pct": list(
+            calibration_preflight_gpu_utilization_pct
+        ),
+        "calibration_preflight_gpu_utilization_limit_pct": (
+            calibration_preflight_gpu_utilization_limit_pct
+        ),
         "peak_bw_gbps": best_bandwidth["gbps"],
         "bandwidth_elements": best_bandwidth["elements"],
         "bandwidth_samples": bandwidth_samples,
@@ -278,14 +305,15 @@ def measure_peaks(device: int = 0) -> PeakResults:
             profile.rated_boost_mhz
         ),
         "theoretical_tflops_fp16_fp32acc_at_measured_clock": (
-            profile.fp16_fp32acc_tflops(best_precise["sm_clock_mhz"])
+            profile.fp16_fp32acc_tflops(theoretical_ceiling_clock_mhz)
         ),
         "theoretical_tflops_fp16_fp16acc_rated": profile.fp16_fp16acc_tflops(
             profile.rated_boost_mhz
         ),
         "theoretical_tflops_fp16_fp16acc_at_measured_clock": (
-            profile.fp16_fp16acc_tflops(best_reduced["sm_clock_mhz"])
+            profile.fp16_fp16acc_tflops(theoretical_ceiling_clock_mhz)
         ),
+        "theoretical_ceiling_sm_clock_mhz": theoretical_ceiling_clock_mhz,
         "tflops_samples": precise_samples,
         "tflops_samples_reduced_precision_allowed": reduced_precision_samples,
         "best_tflops_size": best_precise["n"],
@@ -303,6 +331,9 @@ def measure_peaks(device: int = 0) -> PeakResults:
             ),
             "fp16_fp32acc_rated_tflops": profile.fp16_fp32acc_tflops(profile.rated_boost_mhz),
             "fp16_fp16acc_rated_tflops": profile.fp16_fp16acc_tflops(profile.rated_boost_mhz),
+            "ceiling_clock_policy": (
+                "maximum sm_clock_max_mhz observed across both compute calibration sweeps"
+            ),
             "product_spec_url": profile.product_spec_url,
             "architecture_whitepaper_url": profile.architecture_whitepaper_url,
         },
@@ -314,6 +345,9 @@ def load_or_measure_peaks(
     *,
     device: int = 0,
     force: bool = False,
+    calibration_started_at_utc: str,
+    calibration_preflight_gpu_utilization_pct: tuple[int, ...],
+    calibration_preflight_gpu_utilization_limit_pct: int,
 ) -> tuple[PeakResults, Path]:
     """Load a compatible peak cache or calibrate and persist a new one.
 
@@ -321,6 +355,11 @@ def load_or_measure_peaks(
         results_root: Root directory for per-GPU results.
         device: CUDA device index.
         force: Ignore an existing cache and recalibrate.
+        calibration_started_at_utc: ISO-8601 start time for the current run.
+        calibration_preflight_gpu_utilization_pct: Utilization samples for the
+            current run, persisted if calibration is performed.
+        calibration_preflight_gpu_utilization_limit_pct: Maximum permitted
+            preflight utilization.
 
     Returns:
         Peak payload and its JSON path.
@@ -343,7 +382,14 @@ def load_or_measure_peaks(
         )
         return cast(PeakResults, stored), output_path
 
-    peaks = measure_peaks(device)
+    peaks = measure_peaks(
+        device,
+        calibration_started_at_utc=calibration_started_at_utc,
+        calibration_preflight_gpu_utilization_pct=(calibration_preflight_gpu_utilization_pct),
+        calibration_preflight_gpu_utilization_limit_pct=(
+            calibration_preflight_gpu_utilization_limit_pct
+        ),
+    )
     write_json_atomic(output_path, cast(JsonObject, peaks))
     return peaks, output_path
 
@@ -382,6 +428,20 @@ def _measure_bandwidth_samples(
             }
         )
     return samples
+
+
+def _maximum_observed_sm_clock_mhz(
+    *sample_groups: list[TflopsSample],
+) -> int:
+    """Return the highest sampled SM clock across compute calibration sweeps.
+
+    Raises:
+        ValueError: If no compute samples are supplied.
+    """
+    clocks = [sample["sm_clock_max_mhz"] for group in sample_groups for sample in group]
+    if not clocks:
+        raise ValueError("at least one compute clock sample is required")
+    return max(clocks)
 
 
 def _measure_tflops_samples(
@@ -580,17 +640,43 @@ def _validate_stored_peaks(
         "cublas_tflops_fp16_fp32acc",
         "theoretical_tflops_fp16_fp32acc_at_measured_clock",
         "theoretical_tflops_fp16_fp16acc_at_measured_clock",
+        "theoretical_ceiling_sm_clock_mhz",
         "theoretical_provenance",
+        "calibration_started_at_utc",
+        "calibration_preflight_gpu_utilization_pct",
+        "calibration_preflight_gpu_utilization_limit_pct",
     }
     missing = sorted(required_fields.difference(payload))
     if missing:
         raise ValueError(f"{path}: missing required fields: {', '.join(missing)}")
+
+    utilization_samples = payload["calibration_preflight_gpu_utilization_pct"]
+    utilization_limit = payload["calibration_preflight_gpu_utilization_limit_pct"]
+    if (
+        not isinstance(utilization_samples, list)
+        or not utilization_samples
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 100
+            for value in utilization_samples
+        )
+    ):
+        raise ValueError(f"{path}: invalid calibration GPU-utilization samples")
+    validated_utilization_samples = cast(list[int], utilization_samples)
+    if (
+        not isinstance(utilization_limit, int)
+        or isinstance(utilization_limit, bool)
+        or utilization_limit < 0
+        or utilization_limit > 100
+        or max(validated_utilization_samples) > utilization_limit
+    ):
+        raise ValueError(f"{path}: invalid calibration GPU-utilization limit")
 
     positive_numeric_fields = {
         "peak_bw_gbps",
         "cublas_tflops_fp16_fp32acc",
         "theoretical_tflops_fp16_fp32acc_at_measured_clock",
         "theoretical_tflops_fp16_fp16acc_at_measured_clock",
+        "theoretical_ceiling_sm_clock_mhz",
     }
     invalid_numeric: list[str] = []
     for field in sorted(positive_numeric_fields):
@@ -619,6 +705,7 @@ def _validate_stored_peaks(
         "fp16_fp32acc_flops_per_clock_per_tensor_core",
         "fp16_fp32acc_rated_tflops",
         "fp16_fp16acc_rated_tflops",
+        "ceiling_clock_policy",
         "product_spec_url",
         "architecture_whitepaper_url",
     }

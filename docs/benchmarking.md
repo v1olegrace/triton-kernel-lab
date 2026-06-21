@@ -54,8 +54,8 @@ Compute calibration:
 The JSON separates:
 
 - measured cuBLAS FP16-input/FP32-accumulate throughput;
-- theoretical FP16/FP32-accumulate throughput at measured clock;
-- theoretical FP16/FP16-accumulate throughput at measured clock.
+- theoretical FP16/FP32-accumulate throughput at the maximum observed clock;
+- theoretical FP16/FP16-accumulate throughput at the maximum observed clock.
 
 Theoretical numbers are derived only from an audited hardware profile with
 primary-source URLs. Unsupported GPUs fail explicitly rather than inheriting
@@ -81,6 +81,18 @@ Adversarial cases run on real GPU where supported:
 `speedup` always means Triton divided into the measured PyTorch production
 baseline. `speedup_vs_naive` is a separate pedagogical comparison.
 
+Every registered memory-bound kernel records both comparisons:
+
+- `reference_baseline`: the closest production PyTorch operation or direct
+  idiomatic composition;
+- `naive_baseline`: an explicitly decomposed multi-pass implementation.
+
+The JSON records whether each comparator allocates its output. RoPE has no
+single native PyTorch operator, so its production reference is the direct
+half-wise rotate-half composition; its naive comparator materializes the
+full-width cosine/sine tables and rotated tensor. The labels make that
+distinction explicit rather than calling either composition a native op.
+
 For memory-bound kernels, `% peak` is the primary metric. FP32-accumulating
 GEMM reports two deliberately separate cuBLAS comparisons:
 
@@ -99,3 +111,31 @@ shape. The JSON therefore never labels the global ratio simply as
 For FP16 accumulation, PyTorch currently does not expose a distinct fair
 cuBLAS baseline, so only the theoretical denominator and direct comparison
 against the FP32-accumulating Triton kernel are reported.
+
+## Compute-clock policy
+
+`nvidia-smi` clock telemetry is sampled concurrently with both cuBLAS
+calibration sweeps. The per-size median/minimum/maximum samples remain in
+`peaks.json`, including the clock paired with the best measured cuBLAS point.
+
+The theoretical roofline denominator uses the **maximum SM clock observed
+anywhere across both calibration sweeps**, not the median clock attached to
+the throughput winner. A sparse polling sample can miss the active-kernel
+boost interval; using that lower median as an upper bound can produce the
+physically misleading result `measured throughput > theoretical ceiling`.
+The maximum observed clock is still empirical and session-specific, but it is
+the appropriate upper-bound clock for a roofline. The selected value and
+policy are serialized as `theoretical_ceiling_sm_clock_mhz` and
+`theoretical_provenance.ceiling_clock_policy`.
+
+## Session provenance
+
+The benchmark guard records five one-second-spaced whole-GPU utilization
+samples before any calibration or timing. The default rejects the session if
+any sample exceeds 10%; `--allow-busy-gpu` remains a diagnostic-only override.
+
+`peaks.json` stores the calibration timestamp, all five utilization samples,
+and the threshold. Every kernel JSON stores its benchmark-session timestamp
+and samples plus the calibration-session provenance it consumed. A reviewer
+can therefore verify from committed artifacts whether all kernels and their
+roofline denominators came from the same clean run.

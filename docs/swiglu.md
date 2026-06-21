@@ -62,7 +62,8 @@ baseline explicitly composes the stable FP32 sigmoid and pointwise products.
 Both PyTorch baselines allocate; the Triton timed region reuses a preallocated
 output.
 
-Dirty diagnostic measurements are intentionally not committed. Official
-numbers will be produced with the complete registry in one clean GPU session.
+Dirty diagnostic measurements are intentionally not committed. The accepted
+complete-registry run is stored in
+`results/nvidia_geforce_rtx_4060/swiglu_forward.json`.
 
 The custom autograd function implements first-order differentiation only.

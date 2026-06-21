@@ -2,9 +2,10 @@
 
 Each subdirectory is named from `torch.cuda.get_device_name()` and contains:
 
-- `peaks.json`: empirical bandwidth, cuBLAS sweeps, clocks, versions, and
-  theoretical provenance;
-- `<kernel>.json`: per-size timing and performance metrics;
+- `peaks.json`: empirical bandwidth, cuBLAS sweeps, clocks, versions,
+  theoretical provenance, and clean-session preflight samples;
+- `<kernel>.json`: per-size timing, performance metrics, comparator labels,
+  allocation metadata, and benchmark/calibration session provenance;
 - `layer_norm_backward.json`: gradient errors and two-stage backward timing;
 - `layer_norm_lock_stress.json`: repeated high-contention lock validation;
 - `rms_norm_lock_stress.json`: single-buffer lock/count validation;

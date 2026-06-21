@@ -1,50 +1,60 @@
 {
-  "schema_version": 4,
+  "schema_version": 6,
   "gpu_name": "NVIDIA GeForce RTX 4060",
   "gpu_slug": "nvidia_geforce_rtx_4060",
   "compute_capability": "8.9",
   "torch_version": "2.12.1+cu130",
   "triton_version": "3.7.1",
-  "peak_bw_gbps": 247.77315140178106,
-  "bandwidth_elements": 16777216,
+  "calibration_started_at_utc": "2026-06-21T18:56:17.177403+00:00",
+  "calibration_preflight_gpu_utilization_pct": [
+    3,
+    3,
+    3,
+    3,
+    3
+  ],
+  "calibration_preflight_gpu_utilization_limit_pct": 10,
+  "peak_bw_gbps": 250.13741715102677,
+  "bandwidth_elements": 33554432,
   "bandwidth_samples": [
     {
       "elements": 4194304,
       "working_set_bytes": 33554432,
-      "ms": 0.1412159949541092,
-      "gbps": 237.6107041621181
+      "ms": 0.13831999897956848,
+      "gbps": 242.58554256464672
     },
     {
       "elements": 8388608,
       "working_set_bytes": 67108864,
-      "ms": 0.2744320034980774,
-      "gbps": 244.53731031581435
+      "ms": 0.2734079957008362,
+      "gbps": 245.4531873801917
     },
     {
       "elements": 16777216,
       "working_set_bytes": 134217728,
-      "ms": 0.5416960120201111,
-      "gbps": 247.77315140178106
+      "ms": 0.5396479964256287,
+      "gbps": 248.71347413312807
     },
     {
       "elements": 33554432,
       "working_set_bytes": 268435456,
-      "ms": 1.0844320058822632,
-      "gbps": 247.5355343109857
+      "ms": 1.07315194606781,
+      "gbps": 250.13741715102677
     }
   ],
-  "cublas_tflops_fp16_fp32acc": 30.875194465557836,
-  "cublas_tflops_fp16_reduced_precision_allowed": 30.783881599823278,
+  "cublas_tflops_fp16_fp32acc": 31.34509192178035,
+  "cublas_tflops_fp16_reduced_precision_allowed": 31.24555552815812,
   "cublas_fp16acc_available_through_torch": false,
   "theoretical_tflops_fp16_fp32acc_rated": 30.22848,
-  "theoretical_tflops_fp16_fp32acc_at_measured_clock": 32.07168,
+  "theoretical_tflops_fp16_fp32acc_at_measured_clock": 33.36192,
   "theoretical_tflops_fp16_fp16acc_rated": 60.45696,
-  "theoretical_tflops_fp16_fp16acc_at_measured_clock": 66.35520000000001,
+  "theoretical_tflops_fp16_fp16acc_at_measured_clock": 66.72384,
+  "theoretical_ceiling_sm_clock_mhz": 2715,
   "tflops_samples": [
     {
       "n": 512,
-      "ms": 0.02051199972629547,
-      "tflops": 13.086752124702775,
+      "ms": 0.02252800017595291,
+      "tflops": 11.915636270570362,
       "sm_clock_mhz": 2715,
       "sm_clock_min_mhz": 2715,
       "sm_clock_max_mhz": 2715,
@@ -56,21 +66,8 @@
     },
     {
       "n": 1024,
-      "ms": 0.09264000132679939,
-      "tflops": 23.180954417568262,
-      "sm_clock_mhz": 2625,
-      "sm_clock_min_mhz": 2625,
-      "sm_clock_max_mhz": 2625,
-      "sm_clock_samples_mhz": [
-        2625,
-        2625,
-        2625
-      ]
-    },
-    {
-      "n": 2048,
-      "ms": 0.5570560097694397,
-      "tflops": 30.84047004736667,
+      "ms": 0.09318400174379349,
+      "tflops": 23.045625942363362,
       "sm_clock_mhz": 2595,
       "sm_clock_min_mhz": 2595,
       "sm_clock_max_mhz": 2595,
@@ -81,41 +78,55 @@
       ]
     },
     {
-      "n": 4096,
-      "ms": 4.531712055206299,
-      "tflops": 30.32826265166208,
-      "sm_clock_mhz": 2490,
-      "sm_clock_min_mhz": 2490,
-      "sm_clock_max_mhz": 2490,
+      "n": 2048,
+      "ms": 0.5550079941749573,
+      "tflops": 30.954273387608765,
+      "sm_clock_mhz": 2550,
+      "sm_clock_min_mhz": 2550,
+      "sm_clock_max_mhz": 2715,
       "sm_clock_samples_mhz": [
-        2490,
-        2490,
-        2490,
-        2490
+        2550,
+        2550,
+        2550,
+        2715
+      ]
+    },
+    {
+      "n": 4096,
+      "ms": 4.384704113006592,
+      "tflops": 31.34509192178035,
+      "sm_clock_mhz": 2535,
+      "sm_clock_min_mhz": 2535,
+      "sm_clock_max_mhz": 2535,
+      "sm_clock_samples_mhz": [
+        2535,
+        2535,
+        2535,
+        2535
       ]
     },
     {
       "n": 8192,
-      "ms": 35.611488342285156,
-      "tflops": 30.875194465557836,
+      "ms": 35.23583984375,
+      "tflops": 31.20435422148813,
       "sm_clock_mhz": 2610,
-      "sm_clock_min_mhz": 2610,
-      "sm_clock_max_mhz": 2625,
+      "sm_clock_min_mhz": 2595,
+      "sm_clock_max_mhz": 2610,
       "sm_clock_samples_mhz": [
         2610,
         2610,
         2610,
         2610,
-        2625,
-        2625
+        2595,
+        2595
       ]
     }
   ],
   "tflops_samples_reduced_precision_allowed": [
     {
       "n": 512,
-      "ms": 0.021503999829292297,
-      "tflops": 12.483047718143249,
+      "ms": 0.020479999482631683,
+      "tflops": 13.107200331115731,
       "sm_clock_mhz": 2700,
       "sm_clock_min_mhz": 2700,
       "sm_clock_max_mhz": 2700,
@@ -142,50 +153,51 @@
       "n": 2048,
       "ms": 0.5580800175666809,
       "tflops": 30.783881599823278,
-      "sm_clock_mhz": 2700,
-      "sm_clock_min_mhz": 2535,
-      "sm_clock_max_mhz": 2700,
-      "sm_clock_samples_mhz": [
-        2535,
-        2700,
-        2700
-      ]
-    },
-    {
-      "n": 4096,
-      "ms": 4.564992189407349,
-      "tflops": 30.107160706849545,
-      "sm_clock_mhz": 2520,
-      "sm_clock_min_mhz": 2520,
-      "sm_clock_max_mhz": 2520,
-      "sm_clock_samples_mhz": [
-        2520,
-        2520,
-        2520,
-        2520
-      ]
-    },
-    {
-      "n": 8192,
-      "ms": 37.182464599609375,
-      "tflops": 29.57070327682235,
-      "sm_clock_mhz": 2475,
-      "sm_clock_min_mhz": 2460,
+      "sm_clock_mhz": 2490,
+      "sm_clock_min_mhz": 2490,
       "sm_clock_max_mhz": 2490,
       "sm_clock_samples_mhz": [
-        2460,
-        2460,
-        2460,
         2490,
         2490,
         2490
       ]
+    },
+    {
+      "n": 4096,
+      "ms": 4.398672103881836,
+      "tflops": 31.24555552815812,
+      "sm_clock_mhz": 2430,
+      "sm_clock_min_mhz": 2430,
+      "sm_clock_max_mhz": 2625,
+      "sm_clock_samples_mhz": [
+        2430,
+        2430,
+        2430,
+        2625
+      ]
+    },
+    {
+      "n": 8192,
+      "ms": 37.200897216796875,
+      "tflops": 29.55605133307244,
+      "sm_clock_mhz": 2475,
+      "sm_clock_min_mhz": 2460,
+      "sm_clock_max_mhz": 2475,
+      "sm_clock_samples_mhz": [
+        2475,
+        2475,
+        2475,
+        2475,
+        2460,
+        2460,
+        2460
+      ]
     }
   ],
-  "best_tflops_size": 8192,
-  "best_tflops_sm_clock_mhz": 2610,
-  "best_reduced_precision_size": 2048,
-  "best_reduced_precision_sm_clock_mhz": 2700,
+  "best_tflops_size": 4096,
+  "best_tflops_sm_clock_mhz": 2535,
+  "best_reduced_precision_size": 4096,
+  "best_reduced_precision_sm_clock_mhz": 2430,
   "allow_fp16_reduced_precision_reduction": false,
   "theoretical_provenance": {
     "model": "NVIDIA GeForce RTX 4060",
@@ -195,6 +207,7 @@
     "fp16_fp32acc_flops_per_clock_per_tensor_core": 128,
     "fp16_fp32acc_rated_tflops": 30.22848,
     "fp16_fp16acc_rated_tflops": 60.45696,
+    "ceiling_clock_policy": "maximum sm_clock_max_mhz observed across both compute calibration sweeps",
     "product_spec_url": "https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/rtx-4060-4060ti/",
     "architecture_whitepaper_url": "https://images.nvidia.com/aem-dam/Solutions/geforce/ada/nvidia-ada-gpu-architecture.pdf"
   }

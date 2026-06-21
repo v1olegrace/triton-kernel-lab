@@ -29,7 +29,7 @@ from tklab.kernels._norm_common import (
     group_size_m,
     validate_epsilon,
 )
-from tklab.registry import BenchmarkCall, KernelSpec, TensorArgs, register
+from tklab.registry import BenchmarkCall, BenchmarkScalar, KernelSpec, TensorArgs, register
 
 _ROWS = 4096
 
@@ -464,6 +464,20 @@ def _torch_layer_norm(
     return F.layer_norm(x, (x.shape[-1],), weight, bias, EPS)
 
 
+def _naive_layer_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+) -> torch.Tensor:
+    """Compose LayerNorm from explicit FP32 reductions and pointwise ops."""
+    x_float = x.float()
+    mean = torch.mean(x_float, dim=-1, keepdim=True)
+    centered = x_float - mean
+    variance = torch.mean(centered * centered, dim=-1, keepdim=True)
+    normalized = centered * torch.rsqrt(variance + EPS)
+    return (normalized * weight.float() + bias.float()).to(x.dtype)
+
+
 def _make_output(args: TensorArgs) -> torch.Tensor:
     """Allocate a contiguous forward output."""
     x = args[0]
@@ -547,6 +561,20 @@ def _make_adversarial(device: torch.device) -> TensorArgs:
     return x, weight, bias
 
 
+def _benchmark_metadata(
+    columns: int,
+    dtype: torch.dtype,
+) -> dict[str, BenchmarkScalar]:
+    """Describe LayerNorm's fused native and explicit composed baselines."""
+    del columns, dtype
+    return {
+        "reference_baseline": "torch.ops.aten.native_layer_norm.out",
+        "naive_baseline": "explicit FP32 mean, variance, normalize, and affine composition",
+        "reference_allocates_output": False,
+        "naive_allocates_output": True,
+    }
+
+
 def _bytes_moved(columns: int, dtype: torch.dtype) -> int:
     """Return effective input-read plus output-write traffic.
 
@@ -573,6 +601,8 @@ LAYER_NORM = register(
         bound="memory",
         bytes_moved=_bytes_moved,
         dtypes=(torch.float16,),
+        naive_fn=_naive_layer_norm,
+        benchmark_metadata=_benchmark_metadata,
         benchmark_call_factory=_make_benchmark_call,
         reference_call_factory=_make_reference_call,
         supports_interpreter=False,

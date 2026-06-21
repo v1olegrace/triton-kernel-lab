@@ -408,6 +408,7 @@ def _benchmark_metadata(
         "reference_baseline": "torch.add plus torch.nn.functional.rms_norm",
         "naive_baseline": "manual add, pointwise, and reduction composition",
         "reference_allocates_output": True,
+        "naive_allocates_output": True,
     }
 
 

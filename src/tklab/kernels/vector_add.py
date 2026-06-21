@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 
 from tklab.harness.addressing import assert_int32_addressable
-from tklab.registry import KernelSpec, TensorArgs, register
+from tklab.registry import BenchmarkScalar, KernelSpec, TensorArgs, register
 
 _BLOCK_SIZE = 1024
 
@@ -114,6 +114,12 @@ def _launch_reference(args: TensorArgs, output: torch.Tensor) -> None:
     torch.add(x, y, out=output)
 
 
+def _naive_vector_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Compose addition as a copy followed by an in-place add."""
+    output = x.clone()
+    return output.add_(y)
+
+
 def _make_inputs(
     size: int,
     device: torch.device,
@@ -139,6 +145,20 @@ def _bytes_moved(size: int, dtype: torch.dtype) -> int:
     return 3 * size * torch.empty((), dtype=dtype).element_size()
 
 
+def _benchmark_metadata(
+    size: int,
+    dtype: torch.dtype,
+) -> dict[str, BenchmarkScalar]:
+    """Describe vector-add's native and deliberately two-pass baselines."""
+    del size, dtype
+    return {
+        "reference_baseline": "torch.add(..., out=preallocated_output)",
+        "naive_baseline": "x.clone() followed by in-place add_(y)",
+        "reference_allocates_output": False,
+        "naive_allocates_output": True,
+    }
+
+
 VECTOR_ADD = register(
     KernelSpec(
         name="vector_add",
@@ -154,5 +174,7 @@ VECTOR_ADD = register(
         bytes_moved=_bytes_moved,
         dtypes=(torch.float16, torch.float32),
         make_adversarial=_make_adversarial,
+        naive_fn=_naive_vector_add,
+        benchmark_metadata=_benchmark_metadata,
     )
 )

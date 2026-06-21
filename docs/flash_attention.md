@@ -149,24 +149,25 @@ FLOP counts include `Q @ K^T` and `P @ V`. Causal counts use the exact lower
 triangle `N * (N + 1) / 2`. SDPA is the primary baseline; theoretical
 FP16-input/FP32-accumulate throughput is reported only as secondary context.
 
-The clean RTX 4060 run, collected after the GPU remained idle with the Windows
-screen locked, produced:
+The clean RTX 4060 run, collected with the physical display off and the
+Windows session left unlocked, produced:
 
 | N | Non-causal vs SDPA | Non-causal TFLOP/s | Causal vs SDPA | Causal TFLOP/s |
 |---:|---:|---:|---:|---:|
-| 512 | 0.863x | 15.61 | 0.945x | 9.55 |
-| 1024 | 0.915x | 22.31 | 0.966x | 16.93 |
-| 2048 | 0.875x | 25.31 | 0.913x | 21.40 |
-| 4096 | 0.889x | 26.51 | 0.866x | 23.40 |
-| 8192 | 0.865x | 26.43 | 0.867x | 25.02 |
+| 512 | 0.877x | 16.13 | 0.962x | 9.73 |
+| 1024 | 0.911x | 22.20 | 0.952x | 16.65 |
+| 2048 | 0.871x | 25.11 | 0.905x | 21.16 |
+| 4096 | 0.780x | 23.14 | 0.883x | 23.72 |
+| 8192 | 0.914x | 24.94 | 0.879x | 23.26 |
 
-The custom kernel reaches 86-97% of PyTorch SDPA across the sweep. Its best
-non-causal result is 26.51 TFLOP/s, 82.67% of the clock-scaled
-FP16-input/FP32-accumulate ceiling; the best causal result is 25.02 TFLOP/s,
-78.00% of that ceiling under the exact lower-triangle FLOP count.
+The custom kernel reaches 78-96% of PyTorch SDPA across the sweep. Its best
+non-causal result is 25.11 TFLOP/s, 75.28% of the
+maximum-observed-clock FP16-input/FP32-accumulate ceiling; the best causal
+result is 23.72 TFLOP/s, 71.10% of that ceiling under the exact
+lower-triangle FLOP count.
 
-Against the empirical 30.88 TFLOP/s cuBLAS FP16-input/FP32-accumulate peak,
-the 26.51 TFLOP/s non-causal result is 85.87%. This is the appropriate
+Against the empirical 31.35 TFLOP/s cuBLAS FP16-input/FP32-accumulate peak,
+the 25.11 TFLOP/s non-causal result is 80.12%. This is the appropriate
 accumulation regime: both attention matrix products accumulate in FP32. The
 remaining gap includes online-softmax max, `exp2`, row-sum, and rescaling work
 interleaved with Tensor Core operations. The measurements are consistent with

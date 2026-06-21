@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 
 from tklab.harness.addressing import assert_int32_addressable
-from tklab.registry import KernelSpec, TensorArgs, register
+from tklab.registry import BenchmarkScalar, KernelSpec, TensorArgs, register
 
 _ROWS = 4096
 _MAX_FUSED_COLUMNS = 1 << 16
@@ -163,6 +163,20 @@ def _naive_softmax(x: torch.Tensor) -> torch.Tensor:
     return numerator / numerator.sum(dim=-1, keepdim=True)
 
 
+def _benchmark_metadata(
+    n_cols: int,
+    dtype: torch.dtype,
+) -> dict[str, BenchmarkScalar]:
+    """Describe softmax's fused native and explicit multi-pass baselines."""
+    del n_cols, dtype
+    return {
+        "reference_baseline": "torch.softmax(..., out=preallocated_output)",
+        "naive_baseline": "explicit max, subtract, exp, sum, and divide composition",
+        "reference_allocates_output": False,
+        "naive_allocates_output": True,
+    }
+
+
 SOFTMAX = register(
     KernelSpec(
         name="fused_softmax",
@@ -179,5 +193,6 @@ SOFTMAX = register(
         bytes_moved=_bytes_moved,
         dtypes=(torch.float16, torch.float32),
         naive_fn=_naive_softmax,
+        benchmark_metadata=_benchmark_metadata,
     )
 )
