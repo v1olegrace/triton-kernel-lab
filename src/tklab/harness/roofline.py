@@ -25,7 +25,7 @@ import triton
 
 from tklab.harness.jsonio import JsonObject, read_json_object, write_json_atomic
 
-PEAKS_SCHEMA_VERSION = 6
+PEAKS_SCHEMA_VERSION = 7
 DEFAULT_BW_ELEMENT_COUNTS = tuple(2**exponent for exponent in range(22, 26))
 DEFAULT_TFLOPS_SIZES = (512, 1024, 2048, 4096, 8192)
 _NVIDIA_RTX4060_SPEC_URL = (
@@ -129,7 +129,7 @@ class PeakResults(TypedDict):
     bandwidth_samples: list[BandwidthSample]
     cublas_tflops_fp16_fp32acc: float
     cublas_tflops_fp16_reduced_precision_allowed: float
-    cublas_fp16acc_available_through_torch: bool
+    torch_fp16acc_available: bool
     theoretical_tflops_fp16_fp32acc_rated: float
     theoretical_tflops_fp16_fp32acc_at_measured_clock: float
     theoretical_tflops_fp16_fp16acc_rated: float
@@ -143,6 +143,17 @@ class PeakResults(TypedDict):
     best_reduced_precision_sm_clock_mhz: int
     allow_fp16_reduced_precision_reduction: bool
     theoretical_provenance: TheoreticalProvenance
+
+
+def torch_fp16acc_available() -> bool:
+    """Report whether this torch build exposes FP16 Tensor Core accumulation.
+
+    ``torch.backends.cuda.matmul.allow_fp16_accumulation`` (torch >= 2.7) is the
+    knob that selects the FP16-accumulate GEMM path. This is a version-determined
+    capability probe, not a throughput measurement; the achieved FP16-accumulate
+    rate is characterized separately by the matmul benchmark.
+    """
+    return hasattr(torch.backends.cuda.matmul, "allow_fp16_accumulation")
 
 
 def gpu_slug(device: int = 0) -> str:
@@ -300,7 +311,7 @@ def measure_peaks(
         "bandwidth_samples": bandwidth_samples,
         "cublas_tflops_fp16_fp32acc": best_precise["tflops"],
         "cublas_tflops_fp16_reduced_precision_allowed": best_reduced["tflops"],
-        "cublas_fp16acc_available_through_torch": False,
+        "torch_fp16acc_available": torch_fp16acc_available(),
         "theoretical_tflops_fp16_fp32acc_rated": profile.fp16_fp32acc_tflops(
             profile.rated_boost_mhz
         ),

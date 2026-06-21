@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "gpu_name": "NVIDIA GeForce RTX 4060",
   "gpu_slug": "nvidia_geforce_rtx_4060",
   "compute_capability": "8.9",
@@ -44,7 +44,7 @@
   ],
   "cublas_tflops_fp16_fp32acc": 31.34509192178035,
   "cublas_tflops_fp16_reduced_precision_allowed": 31.24555552815812,
-  "cublas_fp16acc_available_through_torch": false,
+  "torch_fp16acc_available": true,
   "theoretical_tflops_fp16_fp32acc_rated": 30.22848,
   "theoretical_tflops_fp16_fp32acc_at_measured_clock": 33.36192,
   "theoretical_tflops_fp16_fp16acc_rated": 60.45696,

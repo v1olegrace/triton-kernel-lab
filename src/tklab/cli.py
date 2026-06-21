@@ -23,7 +23,7 @@ from tklab.harness.plots import (
 from tklab.harness.roofline import PeakResults, gpu_utilization_pct, load_or_measure_peaks
 from tklab.registry import REGISTRY, KernelSpec
 
-RESULT_SCHEMA_VERSION = 6
+RESULT_SCHEMA_VERSION = 7
 MAX_IDLE_GPU_UTILIZATION_PCT = 10
 GPU_PREFLIGHT_SAMPLE_COUNT = 5
 GPU_PREFLIGHT_INTERVAL_SECONDS = 1.0
@@ -295,7 +295,6 @@ def _result_payload(
         "cublas_tflops_fp16_reduced_precision_allowed": peaks[
             "cublas_tflops_fp16_reduced_precision_allowed"
         ],
-        "cublas_fp16acc_available_through_torch": peaks["cublas_fp16acc_available_through_torch"],
         "theoretical_tflops_fp16_fp32acc_at_measured_clock": peaks[
             "theoretical_tflops_fp16_fp32acc_at_measured_clock"
         ],

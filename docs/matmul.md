@@ -29,10 +29,18 @@ implemented instruction path; they do not establish training safety.
 
 ## Compute baselines
 
-PyTorch 2.12 does not expose a distinct cuBLAS FP16-accumulate GEMM through
-`torch.mm`. Enabling `allow_fp16_reduced_precision_reduction` leaves measured
-throughput around 30 TFLOP/s, the FP32-accumulate rate. The roofline therefore
-stores that sweep but does not label it as an FP16-accumulate baseline.
+PyTorch exposes the FP16-accumulate GEMM path through
+`torch.backends.cuda.matmul.allow_fp16_accumulation` (added in torch 2.7); the
+roofline records its availability as `torch_fp16acc_available`. This is distinct
+from `allow_fp16_reduced_precision_reduction`, which only controls split-K
+reduction precision and still accumulates in FP32 — enabling it leaves measured
+throughput around 30 TFLOP/s, the FP32-accumulate rate, which is why the
+roofline stores that sweep as a reduced-precision variant of the FP32-accumulate
+baseline rather than an FP16-accumulate baseline. A measured cuBLAS
+FP16-accumulate baseline is deferred to the next clean calibration; the
+Ada consumer half-rate it would confirm is documented hardware behavior
+([pytorch#123157](https://github.com/pytorch/pytorch/issues/123157): 4090
+FP16-acc 330.3 vs FP32-acc 165.2 TFLOP/s).
 
 The theoretical rates are derived from NVIDIA's RTX 4060 product
 specification and Ada architecture whitepaper:

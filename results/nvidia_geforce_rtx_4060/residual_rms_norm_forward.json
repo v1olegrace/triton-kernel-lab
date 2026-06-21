@@ -1,5 +1,5 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "kernel": "residual_rms_norm_forward",
   "description": "Fused residual addition and RMSNorm with two-output autograd.",
   "gpu": "NVIDIA GeForce RTX 4060",
@@ -27,7 +27,6 @@
   "peak_bw_gbps": 250.13741715102677,
   "cublas_tflops_fp16_fp32acc": 31.34509192178035,
   "cublas_tflops_fp16_reduced_precision_allowed": 31.24555552815812,
-  "cublas_fp16acc_available_through_torch": false,
   "theoretical_tflops_fp16_fp32acc_at_measured_clock": 33.36192,
   "theoretical_tflops_fp16_fp16acc_at_measured_clock": 66.72384,
   "theoretical_ceiling_sm_clock_mhz": 2715,
