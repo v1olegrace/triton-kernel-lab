@@ -27,7 +27,8 @@ The focused workloads in `tests/test_sanitizer_workloads.py` exercise:
 - softmax row stride and a non-power-of-two width;
 - both matmul accumulation modes on contiguous tensors and the strided
   `129x193 @ 193x257` M/N/K-tail case;
-- LayerNorm row-strided forward and lock-reduced backward.
+- LayerNorm row-strided forward and lock-reduced backward;
+- RMSNorm row-strided forward and single-buffer lock-reduced backward.
 
 Run them with:
 
@@ -43,6 +44,18 @@ compute-sanitizer --tool racecheck \
 
 compute-sanitizer --tool synccheck \
   python -m pytest tests/test_sanitizer_workloads.py -k layer_norm
+
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k rms_norm
 ```
 
 The RTX 4060 run completed with:
@@ -53,9 +66,15 @@ The RTX 4060 run completed with:
 | initcheck | all focused kernels | 0 errors |
 | racecheck | LayerNorm | 0 errors, 0 warnings |
 | synccheck | LayerNorm | 0 errors |
+| memcheck | RMSNorm | 0 errors |
+| initcheck | RMSNorm | 0 errors |
+| racecheck | RMSNorm | 0 errors, 0 warnings |
+| synccheck | RMSNorm | 0 errors |
 
 The raw summaries are committed under
 `results/nvidia_geforce_rtx_4060/compute_sanitizer_*.log`.
+RMSNorm-specific summaries use the
+`compute_sanitizer_rms_norm_*.log` prefix.
 
 ### Coverage limits
 
@@ -109,6 +128,32 @@ The ordinary gradient suite also combines previously separate dimensions:
 1,025 row-strided rows, 1,000 columns, masked tails, and up to five rows per
 default lock slot. This catches interactions that a power-of-two contention
 test and a low-row-count tail test can each miss in isolation.
+
+## RMSNorm global-lock stress
+
+RMSNorm removes LayerNorm's `dbias` partial but retains a separate count half
+inside the lock allocation. The stress study verifies that surgery directly:
+
+```bash
+python benchmarks/rms_norm_lock_stress.py \
+  --rows 1025 \
+  --columns 1000 \
+  --runs 50 \
+  --group-size 1 \
+  --group-size 8 \
+  --group-size 256 \
+  --group-size 2048
+```
+
+The group-size-1 case forces exactly 1,025 row programs through one lock.
+After every stage-1 launch, the script checks that all lock slots are released,
+all active count slots equal one, and all inactive count slots remain zero.
+It then validates `dweight` against a PyTorch FP32 reference and measures
+run-to-run and group-size drift.
+
+All 200 launches passed. The one-lock case reached approximately `6.00e-7`
+relative reference error and `7.39e-7` maximum repeated drift. Complete
+results and thresholds are stored in `rms_norm_lock_stress.json`.
 
 ## Triton interpreter limitation
 

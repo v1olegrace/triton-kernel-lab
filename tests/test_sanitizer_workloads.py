@@ -11,6 +11,7 @@ from tklab.kernels.flash_attention import attention_causal, attention_noncausal
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp16acc, matmul_fp32acc
+from tklab.kernels.rms_norm import rms_norm
 from tklab.kernels.vector_add import vector_add
 
 pytestmark = [
@@ -60,6 +61,19 @@ def test_sanitizer_layer_norm_forward_backward_strided_tail() -> None:
     bias = torch.randn(columns, device="cuda", dtype=torch.float32, requires_grad=True)
     output = layer_norm(x, weight, bias)
     torch.autograd.grad(output, (x, weight, bias), grad_outputs=dy)
+    torch.cuda.synchronize()
+
+
+def test_sanitizer_rms_norm_forward_backward_strided_tail() -> None:
+    """Exercise RMSNorm's single-buffer lock reduction and masked tail."""
+    rows, columns = 513, 1000
+    x_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
+    dy_storage = torch.randn(rows * 3, columns, device="cuda", dtype=torch.float32)
+    x = x_storage[::2].detach().requires_grad_(True)
+    dy = dy_storage[::3]
+    weight = torch.randn(columns, device="cuda", dtype=torch.float32, requires_grad=True)
+    output = rms_norm(x, weight)
+    torch.autograd.grad(output, (x, weight), grad_outputs=dy)
     torch.cuda.synchronize()
 
 

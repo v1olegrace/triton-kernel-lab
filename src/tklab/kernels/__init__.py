@@ -7,6 +7,7 @@ from tklab.kernels.flash_attention import ATTENTION_CAUSAL, ATTENTION_NONCAUSAL
 from tklab.kernels.fused_softmax import SOFTMAX
 from tklab.kernels.layer_norm import LAYER_NORM
 from tklab.kernels.matmul import MATMUL_FP16ACC, MATMUL_FP32ACC
+from tklab.kernels.rms_norm import RMS_NORM
 from tklab.kernels.vector_add import VECTOR_ADD
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "LAYER_NORM",
     "MATMUL_FP16ACC",
     "MATMUL_FP32ACC",
+    "RMS_NORM",
     "SOFTMAX",
     "VECTOR_ADD",
 ]

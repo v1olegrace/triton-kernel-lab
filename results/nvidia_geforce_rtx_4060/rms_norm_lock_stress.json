@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "kernel": "rms_norm_lock_stress",
+  "gpu": "NVIDIA GeForce RTX 4060",
+  "compute_capability": "8.9",
+  "torch_version": "2.12.1+cu130",
+  "triton_version": "3.7.1",
+  "rows": 1025,
+  "columns": 1000,
+  "row_strided_input": true,
+  "row_strided_upstream_gradient": true,
+  "runs_per_group": 50,
+  "group_results": [
+    {
+      "group_size": 1,
+      "rows_per_slot": 1025,
+      "runs": 50,
+      "locks_released_after_stage1": true,
+      "active_counts_initialized": true,
+      "inactive_counts_zero": true,
+      "bitwise_identical": false,
+      "unique_output_hashes": 50,
+      "max_repeat_relative_drift_dweight": 7.38862411253649e-07,
+      "dweight_relative_frobenius": 6.000272492201475e-07
+    },
+    {
+      "group_size": 8,
+      "rows_per_slot": 129,
+      "runs": 50,
+      "locks_released_after_stage1": true,
+      "active_counts_initialized": true,
+      "inactive_counts_zero": true,
+      "bitwise_identical": false,
+      "unique_output_hashes": 50,
+      "max_repeat_relative_drift_dweight": 2.8259555051590723e-07,
+      "dweight_relative_frobenius": 2.4574558210588293e-07
+    },
+    {
+      "group_size": 256,
+      "rows_per_slot": 5,
+      "runs": 50,
+      "locks_released_after_stage1": true,
+      "active_counts_initialized": true,
+      "inactive_counts_zero": true,
+      "bitwise_identical": true,
+      "unique_output_hashes": 1,
+      "max_repeat_relative_drift_dweight": 0.0,
+      "dweight_relative_frobenius": 1.6728667162624333e-07
+    },
+    {
+      "group_size": 2048,
+      "rows_per_slot": 1,
+      "runs": 50,
+      "locks_released_after_stage1": true,
+      "active_counts_initialized": true,
+      "inactive_counts_zero": true,
+      "bitwise_identical": true,
+      "unique_output_hashes": 1,
+      "max_repeat_relative_drift_dweight": 0.0,
+      "dweight_relative_frobenius": 1.830142082326347e-07
+    }
+  ],
+  "group_invariance": [
+    {
+      "reference_group_size": 1,
+      "group_size": 8,
+      "dweight_relative_frobenius": 6.220952855073847e-07
+    },
+    {
+      "reference_group_size": 1,
+      "group_size": 256,
+      "dweight_relative_frobenius": 5.916615464229835e-07
+    },
+    {
+      "reference_group_size": 1,
+      "group_size": 2048,
+      "dweight_relative_frobenius": 6.011638333802694e-07
+    }
+  ],
+  "interpretation": {
+    "bitwise_identity_expected": false,
+    "reason": "lock acquisition order changes floating-point reduction order",
+    "race_signal": "invalid lock/count state, large drift, or reference error",
+    "max_reference_error": 0.01,
+    "max_repeat_drift": 0.0001,
+    "max_group_drift": 0.0001
+  }
+}

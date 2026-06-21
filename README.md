@@ -54,6 +54,7 @@ and plots then consume the same contract.
 | `matmul_fp32acc` | Tensor Cores, L2 grouping, autotune, FP32 accumulate | % of cuBLAS |
 | `matmul_fp16acc` | FP16 Tensor Core accumulation and accuracy trade-off | % theoretical |
 | `layer_norm_forward` | FP32 statistics, autograd, lock-reduced backward | bandwidth roofline |
+| `rms_norm_forward` | FP32 RMS statistics, autograd, single-buffer lock reduction | bandwidth roofline |
 | `attention_noncausal` / `attention_causal` | online softmax, tiled Q/K/V, causal staging | TFLOP/s vs SDPA |
 
 Kernel-specific analysis is available in:
@@ -61,6 +62,7 @@ Kernel-specific analysis is available in:
 - [Fused softmax](docs/fused_softmax.md)
 - [Matrix multiplication](docs/matmul.md)
 - [LayerNorm with backward](docs/layer_norm.md)
+- [RMSNorm with backward](docs/rms_norm.md)
 - [Flash Attention forward](docs/flash_attention.md)
 - [Benchmark methodology](docs/benchmarking.md)
 - [GPU debugging and profiling](docs/debugging.md)
@@ -177,6 +179,7 @@ import torch
 from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
+from tklab.kernels.rms_norm import rms_norm
 from tklab.kernels.vector_add import vector_add
 
 x = torch.randn(1_000_000, device="cuda", dtype=torch.float16)
@@ -193,6 +196,7 @@ c = matmul_fp32acc(a, b)
 weight = torch.ones(2048, device="cuda", dtype=torch.float16, requires_grad=True)
 bias = torch.zeros_like(weight, requires_grad=True)
 normalized = layer_norm(a, weight, bias)
+rms_normalized = rms_norm(a, weight)
 ```
 
 ### Benchmark CLI
@@ -230,6 +234,13 @@ uv run tklab-bench --kernel layer_norm_forward
 uv run python benchmarks/layer_norm_backward.py
 ```
 
+Benchmark RMSNorm forward and reproduce its lock stress:
+
+```bash
+uv run tklab-bench --kernel rms_norm_forward
+uv run python benchmarks/rms_norm_lock_stress.py
+```
+
 The CLI writes versioned JSON and PNG files under `results/<gpu_slug>/`.
 
 ## Testing and quality
@@ -252,14 +263,18 @@ make format
 
 GPU correctness includes non-power-of-two tails, non-contiguous row/element
 strides, and the adversarial `129×193 @ 193×257` matmul.
-Focused Compute Sanitizer workloads, the LayerNorm lock-contention study, and
-Nsight Compute commands are documented in
+Focused Compute Sanitizer workloads, the LayerNorm and RMSNorm
+lock-contention studies, and Nsight Compute commands are documented in
 [docs/debugging.md](docs/debugging.md).
 
 ## Benchmark methodology
 
 - Timings use `triton.testing.do_bench`, CUDA events, warmup, and L2 flushing.
-- Triton and PyTorch production baselines reuse preallocated outputs.
+- Triton and PyTorch production baselines reuse preallocated outputs when the
+  native reference exposes an `out` contract.
+- PyTorch 2.12 has no `aten.rms_norm.out`; the RMSNorm documentation and
+  benchmark interpretation explicitly retain this allocation-matching
+  limitation.
 - Softmax also measures a deliberately naive multi-pass baseline.
 - Memory cost models depend on dtype.
 - Compute calibration warms the GPU to steady state and records SM clocks.
@@ -279,6 +294,7 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 ├── benchmarks/
 │   ├── flash_attention_memory.py
 │   ├── layer_norm_backward.py  # two-stage backward study
+│   ├── rms_norm_lock_stress.py # single-buffer lock validation
 │   └── run.py                  # compatibility entry point
 ├── docs/
 │   ├── benchmarking.md
@@ -287,7 +303,8 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │   ├── flash_attention.md
 │   ├── fused_softmax.md
 │   ├── layer_norm.md
-│   └── matmul.md
+│   ├── matmul.md
+│   └── rms_norm.md
 ├── results/
 │   └── <gpu_slug>/             # committed JSON and PNG evidence
 ├── src/tklab/
@@ -304,6 +321,7 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │       ├── fused_softmax.py
 │       ├── layer_norm.py
 │       ├── matmul.py
+│       ├── rms_norm.py
 │       └── vector_add.py
 ├── tests/
 ├── CONTRIBUTING.md
@@ -323,6 +341,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
   higher-order gradients are not supported. Its lock-reduced parameter
   gradients are numerically stable but not bitwise deterministic; backward
   rejects PyTorch deterministic mode.
+- RMSNorm has the same 64 KiB row limit and first-order autograd scope. Its
+  single-buffer parameter-gradient reduction is likewise non-deterministic
+  and rejects deterministic mode.
 - Flash Attention forward currently supports contiguous FP16 Q/K/V with
   `head_dim=64` and specializes per compile-time sequence length. Dropout,
   attention bias, grouped-query attention, variable-length production
