@@ -66,6 +66,8 @@ def test_registry_contains_expected_kernels() -> None:
         "layer_norm_forward",
         "residual_rms_norm_forward",
         "rms_norm_forward",
+        "rope_forward",
+        "swiglu_forward",
         "matmul_fp32acc",
         "matmul_fp16acc",
     }

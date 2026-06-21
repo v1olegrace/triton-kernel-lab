@@ -11,6 +11,8 @@ from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
 from tklab.kernels.residual_rms_norm import residual_rms_norm
 from tklab.kernels.rms_norm import rms_norm
+from tklab.kernels.rope import rope
+from tklab.kernels.swiglu import swiglu
 from tklab.kernels.vector_add import vector_add
 
 
@@ -80,6 +82,32 @@ def test_residual_rms_norm_rejects_shape_mismatch() -> None:
             torch.zeros(2, 8),
             torch.zeros(3, 8),
             torch.ones(8),
+        )
+
+
+def test_swiglu_rejects_shape_mismatch() -> None:
+    """Reject mismatched value and gate tensors before requiring CUDA."""
+    with pytest.raises(ValueError, match="identical shapes"):
+        swiglu(torch.zeros(2, 8), torch.zeros(3, 8))
+
+
+def test_rope_rejects_odd_feature_dimension() -> None:
+    """Reject a rotate-half input that cannot be split evenly."""
+    with pytest.raises(ValueError, match="even feature dimension"):
+        rope(
+            torch.zeros(2, 7),
+            torch.zeros(2, 3),
+            torch.zeros(2, 3),
+        )
+
+
+def test_rope_rejects_full_width_tables() -> None:
+    """Require half-dimension tables so both halves share each angle."""
+    with pytest.raises(ValueError, match="columns // 2"):
+        rope(
+            torch.zeros(2, 8),
+            torch.zeros(2, 8),
+            torch.zeros(2, 8),
         )
 
 

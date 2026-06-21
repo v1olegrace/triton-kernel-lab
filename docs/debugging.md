@@ -30,7 +30,9 @@ The focused workloads in `tests/test_sanitizer_workloads.py` exercise:
 - LayerNorm row-strided forward and lock-reduced backward;
 - RMSNorm row-strided forward and single-buffer lock-reduced backward;
 - fused residual RMSNorm with independent strides on both inputs and both
-  output-gradient paths.
+  output-gradient paths;
+- SwiGLU and RoPE forward/backward with independent row strides and masked
+  tails.
 
 Run them with:
 
@@ -74,6 +76,18 @@ compute-sanitizer --tool racecheck \
 
 compute-sanitizer --tool synccheck \
   python -m pytest tests/test_sanitizer_workloads.py -k residual_rms_norm
+
+compute-sanitizer --tool memcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k "swiglu or rope"
+
+compute-sanitizer --tool initcheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k "swiglu or rope"
+
+compute-sanitizer --tool racecheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k "swiglu or rope"
+
+compute-sanitizer --tool synccheck \
+  python -m pytest tests/test_sanitizer_workloads.py -k "swiglu or rope"
 ```
 
 The RTX 4060 run completed with:
@@ -92,6 +106,10 @@ The RTX 4060 run completed with:
 | initcheck | residual RMSNorm | 0 errors |
 | racecheck | residual RMSNorm | 0 errors, 0 warnings |
 | synccheck | residual RMSNorm | 0 errors |
+| memcheck | SwiGLU + RoPE | 0 errors |
+| initcheck | SwiGLU + RoPE | 0 errors |
+| racecheck | SwiGLU + RoPE | 0 errors, 0 warnings |
+| synccheck | SwiGLU + RoPE | 0 errors |
 
 The raw summaries are committed under
 `results/nvidia_geforce_rtx_4060/compute_sanitizer_*.log`.
@@ -99,6 +117,7 @@ RMSNorm-specific summaries use the
 `compute_sanitizer_rms_norm_*.log` prefix.
 Residual RMSNorm summaries use
 `compute_sanitizer_residual_rms_norm_*.log`.
+The elementwise summaries use `compute_sanitizer_elementwise_*.log`.
 
 ### Coverage limits
 

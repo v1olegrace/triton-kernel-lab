@@ -13,6 +13,7 @@ Each subdirectory is named from `torch.cuda.get_device_name()` and contains:
 - `compute_sanitizer_attention_*.log`: Flash Attention tail/causal sanitizer summaries;
 - `compute_sanitizer_rms_norm_*.log`: RMSNorm forward/backward sanitizer summaries;
 - `compute_sanitizer_residual_rms_norm_*.log`: fused residual RMSNorm sanitizer summaries;
+- `compute_sanitizer_elementwise_*.log`: SwiGLU and RoPE sanitizer summaries;
 - `ncu_*.csv`: single-launch Nsight Compute counter exports, when available;
 - `ncu_matmul_summary.json`: compact counter and launch-configuration summary;
 - `attention_{noncausal,causal}.json`: Flash Attention timing vs PyTorch SDPA;

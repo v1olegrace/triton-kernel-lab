@@ -56,6 +56,8 @@ and plots then consume the same contract.
 | `layer_norm_forward` | FP32 statistics, autograd, lock-reduced backward | bandwidth roofline |
 | `rms_norm_forward` | FP32 RMS statistics, autograd, single-buffer lock reduction | bandwidth roofline |
 | `residual_rms_norm_forward` | fused residual stream update, two-output autograd | bandwidth roofline |
+| `swiglu_forward` | stable FP32 sigmoid, deterministic gated backward | bandwidth roofline |
+| `rope_forward` | rotate-half convention, inverse-rotation backward | bandwidth roofline |
 | `attention_noncausal` / `attention_causal` | online softmax, tiled Q/K/V, causal staging | TFLOP/s vs SDPA |
 
 Kernel-specific analysis is available in:
@@ -65,6 +67,8 @@ Kernel-specific analysis is available in:
 - [LayerNorm with backward](docs/layer_norm.md)
 - [RMSNorm with backward](docs/rms_norm.md)
 - [Fused residual addition and RMSNorm](docs/residual_rms_norm.md)
+- [SwiGLU](docs/swiglu.md)
+- [Rotate-half RoPE](docs/rope.md)
 - [Flash Attention forward](docs/flash_attention.md)
 - [Benchmark methodology](docs/benchmarking.md)
 - [GPU debugging and profiling](docs/debugging.md)
@@ -182,7 +186,9 @@ from tklab.kernels.fused_softmax import softmax
 from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp32acc
 from tklab.kernels.residual_rms_norm import residual_rms_norm
+from tklab.kernels.rope import rope
 from tklab.kernels.rms_norm import rms_norm
+from tklab.kernels.swiglu import swiglu
 from tklab.kernels.vector_add import vector_add
 
 x = torch.randn(1_000_000, device="cuda", dtype=torch.float16)
@@ -201,6 +207,10 @@ bias = torch.zeros_like(weight, requires_grad=True)
 normalized = layer_norm(a, weight, bias)
 rms_normalized = rms_norm(a, weight)
 residual_sum, fused_normalized = residual_rms_norm(a, b, weight)
+gated = swiglu(a, b)
+
+angles = torch.randn(a.shape[0], a.shape[1] // 2, device="cuda")
+rotated = rope(a, torch.cos(angles).half(), torch.sin(angles).half())
 ```
 
 ### Benchmark CLI
@@ -251,6 +261,13 @@ Benchmark RMSNorm and residual RMSNorm together during one clean GPU session:
 uv run tklab-bench \
   --kernel rms_norm_forward \
   --kernel residual_rms_norm_forward
+```
+
+The final portfolio benchmark should run the complete registry once after a
+clean boot with GPU applications closed:
+
+```bash
+uv run tklab-bench --force-peaks
 ```
 
 The CLI writes versioned JSON and PNG files under `results/<gpu_slug>/`.
@@ -319,7 +336,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │   ├── layer_norm.md
 │   ├── matmul.md
 │   ├── residual_rms_norm.md
-│   └── rms_norm.md
+│   ├── rms_norm.md
+│   ├── rope.md
+│   └── swiglu.md
 ├── results/
 │   └── <gpu_slug>/             # committed JSON and PNG evidence
 ├── src/tklab/
@@ -337,7 +356,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 │       ├── layer_norm.py
 │       ├── matmul.py
 │       ├── residual_rms_norm.py
+│       ├── rope.py
 │       ├── rms_norm.py
+│       ├── swiglu.py
 │       └── vector_add.py
 ├── tests/
 ├── CONTRIBUTING.md
@@ -363,6 +384,9 @@ See [docs/benchmarking.md](docs/benchmarking.md) for details.
 - Residual RMSNorm shares those limits and returns `(residual_sum,
   normalized)`. Its normalized-output backward is non-deterministic, while a
   residual-sum-only backward bypasses the lock reduction.
+- SwiGLU and RoPE currently accept 2D tensors with contiguous final
+  dimensions. RoPE uses half-dimension angle tables and requires an even
+  feature width.
 - Flash Attention forward currently supports contiguous FP16 Q/K/V with
   `head_dim=64` and specializes per compile-time sequence length. Dropout,
   attention bias, grouped-query attention, variable-length production

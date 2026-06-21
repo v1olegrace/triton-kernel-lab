@@ -9,6 +9,8 @@ from tklab.kernels.layer_norm import LAYER_NORM
 from tklab.kernels.matmul import MATMUL_FP16ACC, MATMUL_FP32ACC
 from tklab.kernels.residual_rms_norm import RESIDUAL_RMS_NORM
 from tklab.kernels.rms_norm import RMS_NORM
+from tklab.kernels.rope import ROPE
+from tklab.kernels.swiglu import SWIGLU
 from tklab.kernels.vector_add import VECTOR_ADD
 
 __all__ = [
@@ -19,6 +21,8 @@ __all__ = [
     "MATMUL_FP32ACC",
     "RESIDUAL_RMS_NORM",
     "RMS_NORM",
+    "ROPE",
     "SOFTMAX",
+    "SWIGLU",
     "VECTOR_ADD",
 ]

@@ -29,6 +29,13 @@ and `residual` must be contiguous, but their row strides may differ. Masking
 supports non-power-of-two widths. The same 64 KiB feature-row limit as
 RMSNorm applies.
 
+A variant that retained the addition in FP32 before normalization could be
+more accurate in isolation, but it would not be equivalent to the drop-in
+contract where `x + residual` is materialized in FP16 before
+`F.rms_norm`. This implementation chooses semantic equivalence with the
+materialized residual stream; the alternative is a different numerical
+design, not a correction to this kernel.
+
 ## Backward
 
 Let `dy` be the gradient of the normalized output and `ds_incoming` the direct

@@ -13,6 +13,8 @@ from tklab.kernels.layer_norm import layer_norm
 from tklab.kernels.matmul import matmul_fp16acc, matmul_fp32acc
 from tklab.kernels.residual_rms_norm import residual_rms_norm
 from tklab.kernels.rms_norm import rms_norm
+from tklab.kernels.rope import rope
+from tklab.kernels.swiglu import swiglu
 from tklab.kernels.vector_add import vector_add
 
 pytestmark = [
@@ -111,6 +113,41 @@ def test_sanitizer_residual_rms_norm_forward_backward_strided_tail() -> None:
         (x, residual, weight),
         grad_outputs=(dsum, doutput),
     )
+    torch.cuda.synchronize()
+
+
+def test_sanitizer_swiglu_forward_backward_strided_tail() -> None:
+    """Exercise stable nonlinear math and independent row strides."""
+    rows, columns = 37, 1000
+    value_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
+    gate_storage = torch.randn(rows * 3, columns, device="cuda", dtype=torch.float32)
+    dy_storage = torch.randn(rows * 4, columns, device="cuda", dtype=torch.float32)
+    value = value_storage[::2].detach().requires_grad_(True)
+    gate = gate_storage[::3].detach().requires_grad_(True)
+    dy = dy_storage[::4]
+    output = swiglu(value, gate)
+    torch.autograd.grad(output, (value, gate), grad_outputs=dy)
+    torch.cuda.synchronize()
+
+
+def test_sanitizer_rope_forward_backward_strided_tail() -> None:
+    """Exercise rotate-half masks, row strides, and inverse rotation."""
+    rows, columns = 37, 1000
+    x_storage = torch.randn(rows * 2, columns, device="cuda", dtype=torch.float32)
+    dy_storage = torch.randn(rows * 3, columns, device="cuda", dtype=torch.float32)
+    angles_storage = torch.randn(
+        rows * 4,
+        columns // 2,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    x = x_storage[::2].detach().requires_grad_(True)
+    dy = dy_storage[::3]
+    angles = angles_storage[::4]
+    cos = torch.cos(angles).detach().requires_grad_(True)
+    sin = torch.sin(angles).detach().requires_grad_(True)
+    output = rope(x, cos, sin)
+    torch.autograd.grad(output, (x, cos, sin), grad_outputs=dy)
     torch.cuda.synchronize()
 
 
