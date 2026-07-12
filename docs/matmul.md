@@ -129,6 +129,7 @@ by each production variant.
 |---|---:|---:|
 | timed throughput / clock-scaled theoretical peak | 96.5% | 80.0% |
 | NCU mode-specific Tensor operations / peak | 95.73% | 89.91% |
+| NCU Tensor pipe active / peak | 23.93% | 44.95% |
 | NCU SM throughput / full-rate peak | 47.38% | 86.90% |
 | NCU DRAM throughput / peak | 11.79% | 21.63% |
 | NCU active warps / peak | 32.26% | 31.95% |
@@ -139,11 +140,14 @@ operation rate. Normalizing `47.38%` from the full-rate denominator gives
 the independently timed 96.5% result. There is no material FP32-accumulate
 Tensor-pipe headroom at this shape.
 
-FP16 accumulation nearly doubles HMMA issue and raises DRAM pressure by 1.83x
-without changing active-warp occupancy. The counters rule out occupancy as
-the cause of the sub-2x speedup and support increased operand-feed pressure.
-They do not, by themselves, identify a particular memory-stall source; that
-would require scheduler-stall and cache-level profiling.
+FP16 accumulation nearly doubles HMMA issue (23.93% to 44.95% Tensor pipe-active)
+yet leaves the Tensor cores active under half the time, while SM throughput
+climbs from 47.38% to 86.90% and DRAM throughput stays low at 11.79% to 21.63%.
+The binding resource is SM throughput, not DRAM bandwidth: the kernel is
+SM-throughput-bound on operand feed well before it is bandwidth-bound. Flat
+active-warp occupancy rules out occupancy as the cause; pinning the exact SM
+sub-pipe that dominates the feed work would need scheduler-stall and cache-level
+profiling.
 
 The contiguous fast path uses signed int32 address arithmetic. Public
 validation rejects layouts whose maximum relative offset exceeds

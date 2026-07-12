@@ -12,11 +12,23 @@ high-precision PyTorch references, and measured against empirical rooflines.
 The project treats correctness, numerical policy, benchmark provenance, and
 performance artifacts as one shared engineering system.
 
+The kernels are not a random sampling. Together they are the compute-bearing
+components of a transformer layer: the attention core, its projection GEMMs,
+RMS/LayerNorm, the SwiGLU MLP nonlinearity, and rotary positional encoding,
+each with a forward and a backward pass. The
+[unified roofline](#roofline-at-a-glance) places all of them on one chart
+against the ceiling of their own regime — the memory-bound kernels reach
+roughly 100% of the 250 GB/s bandwidth roof, and the two compute-bound GEMMs
+reach 92% and 80% of the FP32- and FP16-accumulate Tensor-core roofs.
+
 ## Contents
 
 - [Why this project exists](#why-this-project-exists)
 - [Implemented kernels](#implemented-kernels)
 - [Measured RTX 4060 results](#measured-rtx-4060-results)
+  - [Roofline at a glance](#roofline-at-a-glance)
+  - [Consolidated results](#consolidated-results)
+  - [Highlight: the FP16-accumulate speedup is 1.72×, not 2×](#highlight-the-fp16-accumulate-speedup-is-172-not-2)
 - [Architecture](#architecture)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -85,25 +97,99 @@ Environment:
 - PyTorch 2.12.1 + CUDA 13.0;
 - Triton 3.7.1.
 
+### Roofline at a glance
+
+![Unified roofline: every kernel against the measured RTX 4060 ceilings, plotted
+on a log-log compute-vs-intensity chart. Memory-bound kernels sit at the 250 GB/s
+bandwidth roof; the matmul GEMMs sit at 92% and 80% of the FP32- and
+FP16-accumulate Tensor-core roofs.](results/nvidia_geforce_rtx_4060/roofline.png)
+
+One point per kernel, sourced from the committed benchmark JSON. The vertical
+distance from a point to its ceiling is the measured throughput ratio; the
+horizontal position is the analytic operational intensity. The chart is
+regenerated deterministically by `benchmarks/plot_roofline.py` (two renders
+produce one SHA-256). It is the whole result in one frame: every kernel sits
+near the ceiling of the regime it was optimized for.
+
+### Consolidated results
+
 Representative committed results:
 
 | Measurement | Result |
 |---|---:|
-| empirical memory bandwidth | ~247.8 GB/s |
+| empirical memory bandwidth | ~250.1 GB/s |
 | fused softmax bandwidth utilization | ~100% |
-| fused softmax vs `torch.softmax`, FP16/N=4096 | ~1.32× |
-| fused softmax vs naive multi-pass baseline | ~1.8–6.4× |
-| cuBLAS FP16 input / FP32 accumulate | ~30.9 TFLOP/s |
-| Triton matmul FP32 accumulate | ~31.0 TFLOP/s |
-| Triton matmul FP16 accumulate | ~53.1 TFLOP/s |
-| NCU Tensor-path utilization, FP32 / FP16 accumulate | 95.73% / 89.91% |
+| fused softmax vs `torch.softmax`, FP16/N=4096 | ~1.31× |
+| fused softmax vs naive multi-pass baseline | ~1.8–4.5× |
+| cuBLAS FP16 input / FP32 accumulate, N=2048 | ~30.8 TFLOP/s |
+| Triton matmul FP32 accumulate, N=2048 | ~30.8 TFLOP/s |
+| Triton matmul FP16 accumulate, N=2048 | ~53.1 TFLOP/s |
+| NCU Tensor ops-to-peak ratio, FP32 / FP16 acc | 95.73% / 89.91% |
+| NCU SM throughput, FP32 / FP16 acc | 47.38% / 86.90% |
 | LayerNorm forward vs native PyTorch, FP16 | ~1.5–2.3× |
-| Flash Attention forward vs PyTorch SDPA | ~0.86–0.97× |
+| Flash Attention forward vs PyTorch SDPA | ~0.78–0.96× |
 | Flash vs materialized attention at N=16384, WDDM footprint | 32 MiB vs 16.0 GiB |
+
+Matmul rows are at N=2048, the single shape where both accumulation modes are
+directly compared and where the FP32-accumulate kernel matches cuBLAS; the FP32
+kernel's best shape reaches 32.0 TFLOP/s at N=4096 (95.9% of its roof). Full
+per-shape curves are in the [matmul analysis](docs/matmul.md#rtx-4060-result).
 
 These are observations from one machine, not portable promises. Inspect
 [`results/nvidia_geforce_rtx_4060/`](results/nvidia_geforce_rtx_4060/) for
 full curves, clocks, versions, and autotune winners.
+
+### Highlight: the FP16-accumulate speedup is 1.72×, not 2×
+
+The Ada Tensor cores run FP16-input/FP16-accumulate GEMM at twice the rate of
+FP16-input/FP32-accumulate, so the silicon ceiling is exactly 2× — the 66.72
+and 33.36 TFLOP/s roofs in the figure above. The kernel does not realize 2×. At
+N=2048, the shape where both modes are compared:
+
+- FP32 accumulate: 30.85 TFLOP/s, **92.5%** of its 33.36 TFLOP/s roof;
+- FP16 accumulate: 53.09 TFLOP/s, **79.6%** of its 66.72 TFLOP/s roof.
+
+End to end that is **1.72×**, not 2×, and the arithmetic closes exactly:
+
+```text
+1.72× = 2× × (79.6% / 92.5%)
+```
+
+The 2× is the hardware; the `79.6% / 92.5%` is the realization gap. FP32
+accumulate sits closer to its lower ceiling than FP16 accumulate sits to its
+higher one, so doubling the math rate does not double delivered throughput.
+The shortfall is not codegen: PTX confirms the two variants select different
+MMA instructions (`...f32.f16.f16.f32` vs `...f16.f16.f16.f16`), so `out_dtype`
+is propagating correctly.
+
+Nsight Compute localizes the limit. Switching to FP16 accumulate:
+
+- drives SM throughput from 47.38% to **86.90%** — the binding counter;
+- leaves DRAM throughput at **21.63%** (from 11.79%) — memory bandwidth is
+  nowhere near a wall;
+- keeps the Tensor pipe active only **44.95%** of cycles (from 23.93%) — the
+  Tensor cores are under-fed, not saturated;
+- holds active-warp occupancy flat at ~32%, ruling out occupancy.
+
+So the limit is on-chip, not DRAM starvation: at the doubled math rate SM
+throughput becomes the binding counter at 86.9% — consumed by the non-Tensor
+work of feeding the cores, such as operand staging, shared-memory movement, and
+address generation — while DRAM bandwidth idles at 22%. FP16 accumulate is
+SM-throughput-bound well before it is DRAM-bound on this part, which caps it at
+79.6% of the doubled ceiling. Pinning the exact SM sub-pipe would need
+scheduler-stall and cache-level profiling; what the counters establish is the
+binding resource — SM throughput, not DRAM bandwidth. A separate NCU counter agrees on the direction — the mode-specific
+Tensor-operations-to-peak ratio falls from 95.73% to 89.91%, so FP16 accumulate
+realizes a smaller fraction of its instruction peak — but that ratio uses a
+different denominator than the roofline, so it corroborates the direction rather
+than carrying the 1.72×; the roofline pair (79.6% / 92.5%) carries the number.
+
+This is why the 1.72× is a property of the workload, not a defect: FP16
+accumulation is an inference-oriented throughput mode that trades mantissa bits
+for rate, and the rate it delivers here is bounded by on-chip operand feed, not
+by the 2× math headline. The
+[matmul analysis](docs/matmul.md#rtx-4060-result) carries the full counter table
+and the PTX disassembly.
 
 ## Architecture
 
